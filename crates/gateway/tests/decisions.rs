@@ -203,6 +203,31 @@ async fn decision_free_hits_alpha_path_with_rewritten_model() {
 }
 
 #[tokio::test]
+async fn decision_native_alias_hits_alpha_path() {
+    // Iter 25 composition: native SDKs address routed handlers under
+    // `/api/v1/…`. Without the alias this falls to the fallback proxy
+    // and 404s upstream (the mock only serves the alpha path).
+    let db = scratch_db("native");
+    build_db(&db, true, false);
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mock = spawn_mock(mock_app(seen.clone(), vec![])).await;
+    let gw = spawn_gateway(mock, &db).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("http://{gw}/api/v1/decisions"))
+        .header("authorization", API_KEY)
+        .header("content-type", "application/json")
+        .body(decisions_body("openrouter/pair/decision/free"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let guard = seen.lock().unwrap();
+    assert_eq!(guard.paths, vec!["/alpha/decisions".to_string()]);
+    assert_eq!(guard.models, vec!["m/dfree".to_string()]);
+}
+
+#[tokio::test]
 async fn decision_free_starved_fails_closed() {
     let db = scratch_db("closed");
     build_db(&db, false, false);

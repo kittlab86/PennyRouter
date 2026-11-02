@@ -36,7 +36,7 @@ impl Route {
             "/health" => Self::Health,
             "/v1/chat/completions" | "/api/v1/chat/completions" => Self::Chat,
             "/v1/responses" | "/api/v1/responses" => Self::Responses,
-            "/v1/decisions" => Self::Decisions,
+            "/v1/decisions" | "/api/v1/decisions" => Self::Decisions,
             "/ui" => Self::Ui,
             "/metrics" => Self::Metrics,
             _ => Self::Other,
@@ -615,5 +615,8 @@ mod tests {
         assert_eq!(Route::from_path("/api/v1/responses"), Route::Responses);
         assert_eq!(Route::from_path("/v1/chat/completions"), Route::Chat);
         assert_eq!(Route::from_path("/api/v1/credits"), Route::Other);
+        // Decisions alias (Iter 27 follow-up) shares its slot too.
+        assert_eq!(Route::from_path("/api/v1/decisions"), Route::Decisions);
+        assert_eq!(Route::from_path("/v1/decisions"), Route::Decisions);
     }
 }

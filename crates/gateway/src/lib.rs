@@ -524,8 +524,12 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/api/v1/responses", post(routed_completion))
         // Decisions bodies (`model` + `questions`/`state`) route over
         // decisions-capable offerings and forward to the upstream
-        // alpha decisions endpoint (Iter 27).
+        // alpha decisions endpoint (Iter 27). Same Iter 25 native
+        // alias as chat/responses: the handler ignores the incoming
+        // path (it always forwards to the alpha endpoint), so no
+        // prefix strip is needed.
         .route("/v1/decisions", post(routed_decisions))
+        .route("/api/v1/decisions", post(routed_decisions))
         // Curated menu (Iter 13): clients discover exactly the virtual
         // models; this path used to proxy upstream.
         .route("/v1/models", get(models_list));

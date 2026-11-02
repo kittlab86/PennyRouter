@@ -99,7 +99,8 @@ the configured fallback tier; `smart/.../fallback/...` →
 
 ## Decisions
 
-- `POST /v1/decisions` serves behavior-scoring models: the body
+- `POST /v1/decisions` (plus the native alias
+  `POST /api/v1/decisions`) serves behavior-scoring models: the body
   carries `model` plus the upstream questions schema (`questions`,
   `state`), routes over decisions-capable offerings (see
   [routing.md](routing.md)), and forwards model-rewritten — nothing
