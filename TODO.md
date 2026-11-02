@@ -158,9 +158,19 @@ cheap judge model, classifier-based routing.
       exhaustion; `EXTRA_MODEL_IDS` syncs unlisted models.
       Test: extraction trio + fetch merge + parse + 3 integration
       (route, fallback, fail-closed).
-- [ ] **Iter 25 — OpenRouter-native interface.** `/api/v1/chat/completions`
+- [x] **Iter 25 — OpenRouter-native interface.** `/api/v1/chat/completions`
       + `/api/v1/responses` alias to the routed handler; native fallback
       paths compose against the upstream root (no double `/api`);
       management writes deny by default (`ALLOW_MANAGEMENT_PROXY=1` opts
       in). Test: `tests/openrouter_native.rs` + metrics unit test;
       `cargo test`, clippy, fmt clean.
+- [x] **Iter 26 — Smart classifier.** `openrouter/pair/smart[/max]`
+      (+ `privacy/` variants) picks a tier per request via one
+      decision-model leg (`free`/`lowest`/`low`, plus `think` on
+      `smart/max`), then the normal tier dispatch with no session
+      pinning; fail-closed when unconfigured, marked fallback tier
+      otherwise, rejected tiers never re-picked; classifier metrics +
+      `/ui` panel. Test: `crates/gateway/tests/smart_classifier.rs`
+      (16 integration over mock classifier + mock upstream) +
+      classifier/verdict + routing unit tests. `cargo test`, clippy,
+      fmt clean.

@@ -509,7 +509,7 @@ Development delivers Docker images, platform delivers deployments.
   Proven by extraction + fetch + parse + 3 integration tests.
   `cargo test`, clippy, fmt clean.
 
-## Iter 25 — OpenRouter-native interface
+## Iter 25 — OpenRouter-native interface (done)
 
 - Goal: OpenRouter-native SDKs work through the gateway with an
   explicit `baseURL`, no DNS spoofing. See
@@ -531,8 +531,29 @@ Development delivers Docker images, platform delivers deployments.
   catalog, deny-by-default + opt-in, reads unaffected) plus a
   `Route::from_path` unit test. `cargo test`, clippy, fmt clean.
 
-## After Iter 25
+## Iter 26 — Smart classifier (done)
 
-Deferred ideas in [future.md](future.md): classifier routing,
+- Goal: serve `openrouter/pair/smart[/max]` (plus `privacy/`
+  variants): one decision-model leg picks the cheapest tier that can
+  answer well (`free`/`lowest`/`low`, plus `think` on `smart/max`),
+  then the normal tier dispatch serves it — the one explicit,
+  scoped exception to the no-network routing contract.
+- Value: agents stop guessing between free-first and paid quality;
+  the gateway picks per request, with honest fallback + headers.
+- Shipped: `smart`/`smart/max` parse + 14-id menu, `classifier.rs`
+  (prompt, input extraction/truncation, strict verdict validation),
+  async classifier leg (own timeout, no self-retry, BYOK preserved,
+  privacy fields on both legs), fail-closed/fallback contract
+  (`classifier_not_configured` 503, `classifier_auth_error` 502,
+  fallback tier marked, rejected tiers never re-picked), no session
+  pinning on the smart path, classifier metrics + `/ui` panel.
+  Proven by `crates/gateway/tests/smart_classifier.rs` (16
+  integration tests over mock classifier + mock upstream) plus
+  classifier/verdict and routing unit tests.
+  `cargo test`, clippy, fmt clean.
+
+## After Iter 26
+
+Deferred ideas in [future.md](future.md): exact price prediction,
 parallel fan-out, more judge models. Each becomes roadmap items only
 when pulled forward deliberately.
