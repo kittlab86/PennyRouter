@@ -169,6 +169,27 @@ async fn spawn_mock(seen: Arc<Mutex<Seen>>) -> SocketAddr {
                     }
                 }
             }),
+        )
+        // Non-native management shape: without the `/api` prefix the
+        // gateway historically proxied `base + path`, which lands on
+        // the same upstream URL as the native form. The mock records
+        // it so the guard test can prove nothing is forwarded.
+        .route(
+            "/v1/keys",
+            post({
+                let seen = seen.clone();
+                move |uri: Uri, headers: HeaderMap, body: Bytes| {
+                    let seen = seen.clone();
+                    async move {
+                        record(&seen, "POST", &uri, &headers, Some(&body));
+                        (
+                            StatusCode::OK,
+                            [("content-type", "application/json")],
+                            KEY_INFO.to_vec(),
+                        )
+                    }
+                }
+            }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -362,6 +383,28 @@ async fn management_money_writes_denied_by_default() {
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "{path}");
     }
+    assert_eq!(seen.lock().unwrap().hits, 0);
+}
+
+#[tokio::test]
+async fn management_write_denied_without_api_prefix() {
+    // The non-native form composes to the same upstream URL as the
+    // native form (`base + /v1/keys` == `root + /api/v1/keys`), so the
+    // guard must deny it too — otherwise the 403 is one prefix away
+    // from a bypass.
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mock = spawn_mock(seen.clone()).await;
+    let gw = spawn_gateway(pennyrouter_gateway::AppState::new(format!("http://{mock}"))).await;
+
+    let res = client()
+        .post(format!("http://{gw}/v1/keys"))
+        .header("authorization", API_KEY)
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
     assert_eq!(seen.lock().unwrap().hits, 0);
 }
 

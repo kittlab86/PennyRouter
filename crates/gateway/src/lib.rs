@@ -1063,6 +1063,18 @@ fn is_blocked_management_write(method: &Method, path_and_query: &str) -> bool {
         return false;
     }
     let path = request_path(path_and_query).trim_end_matches('/');
+    // Compare in native form: without the `/api` prefix the fallback
+    // composes `base + path`, which lands on the same upstream URL as
+    // the native form (`root + /api` + path), so `/v1/keys` must match
+    // exactly like `/api/v1/keys` — otherwise the guard is one prefix
+    // away from a bypass.
+    let native;
+    let path = if is_openrouter_native_path(path) {
+        path
+    } else {
+        native = format!("/api{path}");
+        &native
+    };
     segment_prefixed(path, "/api/v1/keys")
         || segment_prefixed(path, "/api/v1/auth/key")
         || segment_prefixed(path, "/api/v1/auth/keys")
