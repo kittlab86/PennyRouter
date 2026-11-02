@@ -97,6 +97,21 @@ the configured fallback tier; `smart/.../fallback/...` →
 `x-pennyrouter-classifier-latency-ms`, plus
 `x-pennyrouter-classifier-fallback: true` when the fallback fired.
 
+## Decisions
+
+- `POST /v1/decisions` serves behavior-scoring models: the body
+  carries `model` plus the upstream questions schema (`questions`,
+  `state`), routes over decisions-capable offerings (see
+  [routing.md](routing.md)), and forwards model-rewritten — nothing
+  else injected — to the upstream alpha decisions endpoint. Answers
+  return verbatim with `x-pennyrouter-provider` on success.
+- Same resilience as chat (one retry, fallback leg, 429 header
+  pass-through), except tier fallback stays within the decisions
+  shape: only the `decision` target is served; any other fallback
+  target fails closed with 400 once the free leg actually needs it.
+  Privacy-field enforcement is chat-only (unknown fields risk an
+  upstream 400).
+
 ## Limits
 
 - Requests up to 1M tokens must be supported (guarded from Iter 2: reject

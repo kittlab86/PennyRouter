@@ -552,7 +552,18 @@ Development delivers Docker images, platform delivers deployments.
   classifier/verdict and routing unit tests.
   `cargo test`, clippy, fmt clean.
 
-## After Iter 26
+## Iter 27 — Decisions route (done)
+
+- Goal: serve decision models for real — the tier routes, but span
+  400s on chat completions; it needs the alpha decisions endpoint.
+- Value: `POST /v1/decisions` answers scoring workloads through the
+  routed pool with chat-grade resilience.
+- Shipped: decisions handler (model-only rewrite, alpha forward,
+  retry + `decision`-only fallback, provider header, 429 memory);
+  `decisions` observability slot; 5 integration tests.
+  `cargo test`, clippy, fmt clean.
+
+## After Iter 27
 
 Deferred ideas in [future.md](future.md): exact price prediction,
 parallel fan-out, more judge models. Each becomes roadmap items only

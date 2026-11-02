@@ -26,6 +26,7 @@ pub enum Route {
     Ui,
     Metrics,
     Other,
+    Decisions,
 }
 
 impl Route {
@@ -35,6 +36,7 @@ impl Route {
             "/health" => Self::Health,
             "/v1/chat/completions" | "/api/v1/chat/completions" => Self::Chat,
             "/v1/responses" | "/api/v1/responses" => Self::Responses,
+            "/v1/decisions" => Self::Decisions,
             "/ui" => Self::Ui,
             "/metrics" => Self::Metrics,
             _ => Self::Other,
@@ -49,6 +51,7 @@ impl Route {
             Self::Ui => "ui",
             Self::Metrics => "metrics",
             Self::Other => "other",
+            Self::Decisions => "decisions",
         }
     }
 
@@ -60,6 +63,9 @@ impl Route {
             Self::Ui => 3,
             Self::Metrics => 4,
             Self::Other => 5,
+            // Appended last (Iter 27) so existing slot indices —
+            // and any dashboard pinned to them — never shift.
+            Self::Decisions => 6,
         }
     }
 }
@@ -224,7 +230,7 @@ pub struct ClassifierSummary {
 }
 
 pub struct Metrics {
-    routes: [RouteMetrics; 6],
+    routes: [RouteMetrics; 7],
     upstream_errors: [AtomicU64; 4],
     guard_rejections: AtomicU64,
     load_shed: AtomicU64,
@@ -245,6 +251,7 @@ impl Metrics {
     pub fn new() -> Self {
         Self {
             routes: [
+                RouteMetrics::new(),
                 RouteMetrics::new(),
                 RouteMetrics::new(),
                 RouteMetrics::new(),
