@@ -3156,7 +3156,8 @@ mod tests {
                 tier: VirtualTier::Smart,
                 privacy: false,
                 free_only: false,
-                fallback: None
+                fallback: None,
+                pinned_model: None
             })
         );
         assert_eq!(
@@ -3165,7 +3166,8 @@ mod tests {
                 tier: VirtualTier::SmartMax,
                 privacy: true,
                 free_only: false,
-                fallback: None
+                fallback: None,
+                pinned_model: None
             })
         );
         assert_eq!(
