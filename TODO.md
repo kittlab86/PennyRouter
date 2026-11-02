@@ -178,3 +178,9 @@ cheap judge model, classifier-based routing.
       model-rewritten bodies to the upstream alpha endpoint with
       retry + decision-only fallback. Test: 5 integration (route,
       fail-closed, passthrough, fallback, wrong-target).
+- [x] **Iter 28 — Pinned-model routes.** `openrouter/pair/model/<id>`
+      (+ `privacy/model/<id>`) pins to one specific catalog model and
+      picks the best provider for it — ranking/cost, throttle skip,
+      budget caps, tool filter, `.../fallback/<tier>` all scope to that
+      model's offerings. Test: parse + integration (route/fallback/
+      budget/tool/throttle/privacy/unknown).

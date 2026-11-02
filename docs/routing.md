@@ -142,6 +142,17 @@ session.
   `{OPENROUTER_BASE_URL}/alpha/decisions`. Unknown model ids pass
   through untouched. Retry, throttle memory, and 429 propagation
   match chat; tier fallback serves the `decision` target only.
+- Pinned-model routes (Iter 28): `openrouter/pair/[privacy/]model/\
+  <model-id>` pins to one specific catalog model (the model id may
+  contain slashes, e.g. `deepseek/deepseek-v4.1-flash`). The router
+  picks the cheapest eligible provider for that model — ranking order
+  when the catalog has it, otherwise inline effective cost — with
+  provider/budget/tool/throttle filtering scoped to that model's
+  offerings. `.../fallback/<tier>` falls through to the named
+  cross-model tier when the pinned leg has nothing to serve, just like
+  `free/fallback/<tier>`. Privacy/budget/auth semantics mirror the
+  other virtual routes. An unknown model id fails closed with
+  `no_eligible_offering` (503) rather than leaking the virtual name.
 - Cost (Iter 7): "cheapest" compares effective cost under the balanced
   workload profile (see [pricing.md](pricing.md)), promo column
   applied; unpriceable offerings sort last. The `openrouter/free`

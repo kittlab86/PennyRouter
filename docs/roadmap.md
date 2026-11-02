@@ -563,7 +563,23 @@ Development delivers Docker images, platform delivers deployments.
   `decisions` observability slot; 5 integration tests.
   `cargo test`, clippy, fmt clean.
 
-## After Iter 27
+## Iter 28 — Pinned-model routes (done)
+
+- Goal: let a caller pin to one specific model (e.g.
+  `deepseek/deepseek-v4.1-flash`) and have the gateway pick the best
+  provider for it — not cross-model, just best provider within that
+  model — with fallback when needed.
+- Value: agents that need a particular capability don't hardcode
+  one provider; the router keeps one virtual id, many providers.
+- Shipped: `openrouter/pair/model/<model-id>` (and
+  `privacy/model/<id>`) with `.../fallback/<tier>`; the pinned leg
+  serves first, the named cross-model tier leg on exhaustion, with
+  header cool-down + budget/tool checks scoped to the pinned model.
+  Proven by parsing + 1 integration test file (route, fallback,
+  tool/budget, unknown-model, privacy wiring).
+  `cargo test --workspace`, clippy, fmt clean.
+
+## After Iter 28
 
 Deferred ideas in [future.md](future.md): exact price prediction,
 parallel fan-out, more judge models. Each becomes roadmap items only
