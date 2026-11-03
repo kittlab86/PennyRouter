@@ -1,6 +1,6 @@
 use axum::{
     body::{Body, Bytes},
-    extract::{Request, State},
+    extract::{Query, Request, State},
     http::{
         header::{CONTENT_TYPE, LOCATION},
         HeaderMap, Method, StatusCode,
@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::Write,
@@ -537,7 +537,9 @@ pub fn app_with_state(state: AppState) -> Router {
     // means no route at all — the path falls through to the
     // fallback proxy like any unknown path.
     let router = if ui_enabled() {
-        router.route("/ui", get(ui_page))
+        router
+            .route("/ui", get(ui_page))
+            .route("/ui/preview", get(ui_preview))
     } else {
         router
     };
@@ -600,6 +602,102 @@ async fn landing(State(state): State<AppState>) -> Response {
         page,
     )
         .into_response()
+}
+
+/// Preview query (Iter 29): `model` is the raw `model` field value to
+/// inspect, `top` caps rows (default 3, clamped 1..=20). The session
+/// key travels as the `Authorization` header — same value real
+/// requests pin with — so it never lands in URLs or logs.
+#[derive(Debug, Deserialize)]
+struct PreviewParams {
+    model: Option<String>,
+    top: Option<usize>,
+}
+
+/// Read-only routing preview JSON (Iter 29): ordered top-N candidates
+/// with every stored column plus sticky-vs-fresh picks. Never stores
+/// a pin; the raw Authorization value is hashed in memory only.
+async fn ui_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<PreviewParams>,
+) -> Response {
+    let Some(model_field) = params.model.filter(|m| !m.trim().is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": {
+                "message": "missing ?model=<model-id>",
+                "type": "invalid_request_error",
+                "code": "invalid_model",
+            }})),
+        )
+            .into_response();
+    };
+    let Some(router) = state.router_handle() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": {
+                "message": "routing off: no catalog loaded",
+                "type": "invalid_request_error",
+                "code": "no_router",
+            }})),
+        )
+            .into_response();
+    };
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let preview = router.preview(&model_field, auth, params.top.unwrap_or(3));
+    (StatusCode::OK, Json(preview_json(&preview))).into_response()
+}
+
+/// Preview JSON shape: stored columns plus computed routing facts.
+fn preview_json(preview: &routing::Preview) -> serde_json::Value {
+    let decision = |d: &Option<routing::PreviewDecision>| {
+        d.as_ref().map(|d| {
+            serde_json::json!({
+                "model_id": d.model_id,
+                "provider": d.provider,
+                "tag": d.tag,
+                "precision_class": d.precision_class,
+                "sticky": d.sticky,
+            })
+        })
+    };
+    serde_json::json!({
+        "model": preview.model_field,
+        "session_namespace": preview.session_namespace,
+        "session_key_hash": preview.session_key_hash,
+        "session_key_hash_hex": preview.session_key_hash.map(|h| format!("{h:016x}")),
+        "fresh": decision(&preview.fresh),
+        "sticky": decision(&preview.sticky),
+        "sticky_hit": preview.sticky_hit,
+        "rejection": preview.rejection.as_ref().map(|r| serde_json::json!({
+            "code": r.code, "message": r.message,
+        })),
+        "note": preview.note,
+        "candidates": preview.candidates.iter().map(|c| serde_json::json!({
+            "model_id": c.model_id,
+            "provider": c.provider,
+            "tag": c.tag,
+            "price_prompt": c.price_prompt,
+            "price_completion": c.price_completion,
+            "price_cache_read": c.price_cache_read,
+            "price_cache_write": c.price_cache_write,
+            "effective_cost": c.effective_cost,
+            "promo_discount": c.promo_discount,
+            "precision_class": c.precision_class,
+            "quality_tier": c.quality_tier,
+            "quality_score": c.quality_score,
+            "supports_tools": c.supports_tools,
+            "supports_decisions": c.supports_decisions,
+            "free_eligible": c.free_eligible,
+            "throttled": c.throttled,
+            "availability": if c.throttled { "cool-down" } else { "available" },
+            "rank_index": c.rank_index,
+            "sticky_match": c.sticky_match,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// Debug UI (Iter 17): read-only operator page. Snapshot version
@@ -712,6 +810,185 @@ async fn ui_page(State(state): State<AppState>) -> Response {
             }
         }
     }
+    page.push_str("<h2>Routing inspector</h2>");
+    page.push_str(
+        "<p>Paste the exact <code>Authorization</code> header value a client sends \
+        (for example <code>Bearer sk-…</code>). The page sends it as the \
+        <code>Authorization</code> header to <code>/ui/preview</code>, where the gateway \
+        hashes it with the same seeded hash the request path pins with. The raw key is \
+        never logged and never stored; previews never create pins. Empty means anonymous \
+        (no session, always the fresh pick).</p>",
+    );
+    page.push_str(
+        "<p><label>Session key: \
+        <input type=\"password\" id=\"inspector-key\" size=\"40\" autocomplete=\"off\" \
+        placeholder=\"Bearer sk-…\"> </label>\
+        <button id=\"inspector-refresh\" type=\"button\">Refresh fixed with key</button> \
+        <span id=\"inspector-hash\"></span></p>",
+    );
+    page.push_str("<h3>Fixed combinations (top 3)</h3>");
+    page.push_str("<div style=\"overflow:auto\">");
+    if let Some(router) = state.router_handle() {
+        fn bool3(value: Option<bool>) -> &'static str {
+            match value {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "-",
+            }
+        }
+        for (i, id) in routing::FIXED_PREVIEW_IDS.iter().enumerate() {
+            let preview = router.preview(id, None, 3);
+            page.push_str(&format!("<h4>{}</h4>", esc(id)));
+            match &preview.fresh {
+                Some(fresh) => page.push_str(&format!(
+                    "<p id=\"fixed-{i}-pick\">Fresh pick: <strong>{}</strong> ({})</p>",
+                    esc(&fresh.provider),
+                    esc(&fresh.model_id),
+                )),
+                None => page.push_str(&format!(
+                    "<p id=\"fixed-{i}-pick\">No eligible offering{}</p>",
+                    preview
+                        .rejection
+                        .as_ref()
+                        .map(|r| format!(" ({})", esc(r.code)))
+                        .unwrap_or_default(),
+                )),
+            }
+            page.push_str(
+                "<table><thead><tr><th>#</th><th>provider</th><th>backend model</th><th>tag</th>\
+                <th>prompt $/tok</th><th>completion $/tok</th><th>cache-read $/tok</th>\
+                <th>cache-write $/tok</th><th>effective</th><th>promo</th><th>class</th>\
+                <th>tier</th><th>score</th><th>tools</th><th>decisions</th>\
+                <th>free</th><th>availability</th><th>rank</th></tr></thead>",
+            );
+            page.push_str(&format!("<tbody id=\"fixed-{i}-rows\">"));
+            for (n, c) in preview.candidates.iter().enumerate() {
+                page.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                    <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                    <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                    <td>{}</td><td>{}</td><td>{}</td></tr>",
+                    n + 1,
+                    esc(&c.provider),
+                    esc(&c.model_id),
+                    c.tag.as_deref().map(esc).unwrap_or_else(|| "-".to_string()),
+                    money(c.price_prompt),
+                    money(c.price_completion),
+                    money(c.price_cache_read),
+                    money(c.price_cache_write),
+                    money(c.effective_cost),
+                    c.promo_discount
+                        .map(|d| format!("{d:.2}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    text(&c.precision_class),
+                    text(&c.quality_tier),
+                    c.quality_score
+                        .map(|s| format!("{s:.3}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    bool3(c.supports_tools),
+                    bool3(c.supports_decisions),
+                    if c.free_eligible { "yes" } else { "no" },
+                    if c.throttled {
+                        "cool-down"
+                    } else {
+                        "available"
+                    },
+                    c.rank_index
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                ));
+            }
+            page.push_str("</tbody></table>");
+        }
+    } else {
+        page.push_str("<p>Routing off: no catalog loaded.</p>");
+    }
+    page.push_str("</div>");
+    page.push_str(
+        "<h3>Custom model</h3>\
+        <p><label>Model: <input id=\"inspector-model\" size=\"48\" \
+        placeholder=\"openrouter/pair/low\"></label> \
+        <label>Top: <input id=\"inspector-top\" size=\"4\" value=\"5\"></label> \
+        <button id=\"inspector-go\" type=\"button\">Inspect</button></p>\
+        <div id=\"inspector-result\"></div>",
+    );
+    page.push_str(
+        "<script>\
+        function insEsc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')\
+        .replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}\
+        function insMoney(v){return (v===null||v===undefined)?'-':Number(v).toFixed(7);}\
+        function insBool(v){return (v===null||v===undefined)?'-':(v?'yes':'no');}\
+        async function insFetch(model,top){\
+        var key=document.getElementById('inspector-key').value;\
+        var headers={};if(key){headers['Authorization']=key;}\
+        var res=await fetch('/ui/preview?model='+encodeURIComponent(model)+'&top='+top,{headers:headers});\
+        return res.json();}\
+        function insRow(c,i){\
+        return '<tr><td>'+(i+1)+'</td><td>'+insEsc(c.provider)+'</td><td>'+insEsc(c.model_id)+'</td><td>'\
+        +(c.tag?insEsc(c.tag):'-')+'</td><td>'+insMoney(c.price_prompt)+'</td><td>'+insMoney(c.price_completion)\
+        +'</td><td>'+insMoney(c.price_cache_read)+'</td><td>'+insMoney(c.price_cache_write)+'</td><td>'\
+        +insMoney(c.effective_cost)+'</td><td>'+((c.promo_discount===null||c.promo_discount===undefined)?'-':Number(c.promo_discount).toFixed(2))\
+        +'</td><td>'+(c.precision_class?insEsc(c.precision_class):'-')+'</td><td>'\
+        +(c.quality_tier?insEsc(c.quality_tier):'-')+'</td><td>'\
+        +((c.quality_score===null||c.quality_score===undefined)?'-':Number(c.quality_score).toFixed(3))\
+        +'</td><td>'+insBool(c.supports_tools)+'</td><td>'+insBool(c.supports_decisions)+'</td><td>'\
+        +(c.free_eligible?'yes':'no')+'</td><td>'+insEsc(c.availability)+'</td><td>'\
+        +((c.rank_index===null||c.rank_index===undefined)?'-':c.rank_index)+'</td><td>'\
+        +(c.sticky_match?'pinned':'-')+'</td></tr>';}\
+        function insTable(data){\
+        var h='<table><thead><tr><th>#</th><th>provider</th><th>backend model</th><th>tag</th>'\
+        +'<th>prompt $/tok</th><th>completion $/tok</th><th>cache-read $/tok</th><th>cache-write $/tok</th>'\
+        +'<th>effective</th><th>promo</th><th>class</th><th>tier</th><th>score</th><th>tools</th>'\
+        +'<th>decisions</th><th>free</th><th>availability</th><th>rank</th><th>session</th></tr></thead><tbody>';\
+        for(var i=0;i<data.candidates.length;i++){h+=insRow(data.candidates[i],i);}\
+        return h+'</tbody></table>';}\
+        function insHead(data){\
+        var h='<p>Namespace <code>'+insEsc(data.session_namespace)+'</code>';\
+        if(data.session_key_hash_hex){h+=' — session hash <code>'+insEsc(data.session_key_hash_hex)+'</code>';}\
+        h+='</p>';\
+        if(data.fresh){h+='<p>Fresh (no session): <strong>'+insEsc(data.fresh.provider)+'</strong> ('+insEsc(data.fresh.model_id)+')</p>';}\
+        if(data.sticky){h+='<p>With this key'+(data.sticky_hit?' (sticky pin wins)':' (no pin, same as fresh)')\
+        +': <strong>'+insEsc(data.sticky.provider)+'</strong> ('+insEsc(data.sticky.model_id)+')</p>';}\
+        if(data.rejection){h+='<p>Rejected: <code>'+insEsc(data.rejection.code)+'</code> — '+insEsc(data.rejection.message)+'</p>';}\
+        if(data.note){h+='<p>'+insEsc(data.note)+'</p>';}\
+        return h;}\
+        document.getElementById('inspector-go').onclick=async function(){\
+        var model=document.getElementById('inspector-model').value;\
+        var top=parseInt(document.getElementById('inspector-top').value,10)||5;\
+        var box=document.getElementById('inspector-result');\
+        try{var data=await insFetch(model,top);box.innerHTML=insHead(data)+insTable(data);\
+        var hash=document.getElementById('inspector-hash');\
+        hash.textContent=data.session_key_hash_hex?('hash '+data.session_key_hash_hex):'';}\
+        catch(e){box.textContent='preview failed: '+e;}};\
+        document.getElementById('inspector-refresh').onclick=async function(){\
+        var ids=[];var els=document.querySelectorAll('[id^=\"fixed-\"][id$=\"-rows\"]');\
+        for(var k=0;k<els.length;k++){ids.push(k);}\
+        var models=['openrouter/pair/free','openrouter/pair/low','openrouter/pair/think',\
+        'openrouter/pair/decision','openrouter/pair/decision/free','openrouter/pair/privacy/free',\
+        'openrouter/pair/privacy/low','openrouter/pair/privacy/think','openrouter/pair/privacy/decision',\
+        'openrouter/pair/privacy/decision/free'];\
+        for(var i=0;i<models.length;i++){\
+        try{var data=await insFetch(models[i],3);\
+        var rows=document.getElementById('fixed-'+i+'-rows');\
+        var pick=document.getElementById('fixed-'+i+'-pick');\
+        if(rows){var h='';for(var j=0;j<data.candidates.length;j++){var c=data.candidates[j];\
+        h+='<tr><td>'+(j+1)+'</td><td>'+insEsc(c.provider)+'</td><td>'+insEsc(c.model_id)+'</td><td>'\
+        +(c.tag?insEsc(c.tag):'-')+'</td><td>'+insMoney(c.price_prompt)+'</td><td>'+insMoney(c.price_completion)\
+        +'</td><td>'+insMoney(c.price_cache_read)+'</td><td>'+insMoney(c.price_cache_write)+'</td><td>'\
+        +insMoney(c.effective_cost)+'</td><td>'+((c.promo_discount===null||c.promo_discount===undefined)?'-':Number(c.promo_discount).toFixed(2))\
+        +'</td><td>'+(c.precision_class?insEsc(c.precision_class):'-')+'</td><td>'\
+        +(c.quality_tier?insEsc(c.quality_tier):'-')+'</td><td>'\
+        +((c.quality_score===null||c.quality_score===undefined)?'-':Number(c.quality_score).toFixed(3))\
+        +'</td><td>'+insBool(c.supports_tools)+'</td><td>'+insBool(c.supports_decisions)+'</td><td>'\
+        +(c.free_eligible?'yes':'no')+'</td><td>'+insEsc(c.availability)+'</td><td>'\
+        +((c.rank_index===null||c.rank_index===undefined)?'-':c.rank_index)+'</td></tr>';}\
+        rows.innerHTML=h;}\
+        if(pick){if(data.sticky){pick.innerHTML='With this key'+(data.sticky_hit?' (sticky)':' (fresh)')\
+        +': <strong>'+insEsc(data.sticky.provider)+'</strong> ('+insEsc(data.sticky.model_id)+')';}}\
+        if(data.session_key_hash_hex){document.getElementById('inspector-hash').textContent='hash '+data.session_key_hash_hex;}}\
+        catch(e){}}};\
+        </script>",
+    );
     page.push_str("<h2>Smart classifier</h2>");
     match state.classifier_config() {
         None => page.push_str("<p>Classifier: <strong>off</strong> (set CLASSIFIER_MODEL) — smart ids fail closed.</p>"),

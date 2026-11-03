@@ -579,7 +579,32 @@ Development delivers Docker images, platform delivers deployments.
   tool/budget, unknown-model, privacy wiring).
   `cargo test --workspace`, clippy, fmt clean.
 
-## After Iter 28
+## Iter 29 — Routing inspector (done)
+
+- Goal: show in realtime what each model combination returns for one
+  key — fixed common combos top-3 plus an open model box, with the
+  stored columns and the sticky-vs-fresh answer.
+- Value: operators stop guessing which provider a key gets and why;
+  session stickiness becomes visible instead of tribal knowledge.
+- Shipped: read-only `Router::preview` (top-N ordered candidates,
+  sticky pick with this key vs fresh pick without session, session
+  namespace + hash, all stored columns plus effective cost, free
+  eligibility, throttle availability, rank index; smart ids preview
+  as an explanatory rejection; fallback legs preview the serving
+  leg); `GET /ui/preview?model=<id>&top=N` JSON behind `GATEWAY_UI=1`
+  (key as `Authorization`, never logged/stored, never pins; missing
+  model 400, no router 503, disabled falls through); `/ui` inspector
+  (key box with hash, ten fixed non-smart virtual ids top-3
+  server-rendered anonymous plus keyed refresh, custom-model box
+  with sticky/fresh panel and full column tables).
+- Test: `crates/gateway/tests/ui.rs` preview suite (low top-1 matches
+  decide, think/low/free/decision tiers, sticky-vs-fresh across a
+  snapshot swap matching decide, preview-never-pins via hash,
+  throttled pin falls through, endpoint JSON columns, 400/503,
+  disabled falls through, page content). `cargo test`, clippy, fmt
+  clean.
+
+## After Iter 29
 
 Deferred ideas in [future.md](future.md): exact price prediction,
 parallel fan-out, more judge models. Each becomes roadmap items only

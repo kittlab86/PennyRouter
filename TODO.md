@@ -184,3 +184,12 @@ cheap judge model, classifier-based routing.
       budget caps, tool filter, `.../fallback/<tier>` all scope to that
       model's offerings. Test: parse + integration (route/fallback/
       budget/tool/throttle/privacy/unknown).
+- [x] **Iter 29 — Routing inspector.** `GET /ui` inspector + `GET
+      /ui/preview?model=<id>&top=N` (behind `GATEWAY_UI=1`): fixed
+      non-smart virtual combos top-3 plus a custom-model box, every
+      stored column (prices, effective cost, class, tier/score, tools,
+      decisions, promo, free, availability, rank) with sticky-vs-fresh
+      picks and the session hash. Key travels as `Authorization`,
+      never logged/stored; previews never pin. Test: `tests/ui.rs`
+      preview suite (ordering, sticky/fresh, no-pin, throttle,
+      disabled gate, page content).

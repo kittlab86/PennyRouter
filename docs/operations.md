@@ -159,12 +159,25 @@ code runs when they are off.
 - Gateway: `GATEWAY_UI=1` registers `GET /ui` on the gateway port:
   snapshot version and counts, the virtual menu, per-model
   offerings with the ranking's default-orientation provider order,
-  free offers, and the metrics text. Rendered on demand from short
-  read locks; routing never waits on it and it never calls upstream.
-  Unset (the default) leaves `/ui` unregistered — the path falls
-  through to the fallback proxy like any unknown path. `GET /`
-  always serves a fixed landing page (version, build hash, config
-  status, links) instead of proxying upstream.
+  free offers, a routing inspector, and the metrics text. Rendered
+  on demand from short read locks; routing never waits on it and it
+  never calls upstream. Unset (the default) leaves `/ui` (and
+  `/ui/preview`) unregistered — the paths fall through to the
+  fallback proxy like any unknown path. `GET /` always serves a
+  fixed landing page (version, build hash, config status, links)
+  instead of proxying upstream.
+- Inspector (Iter 29): `/ui` shows ten fixed non-smart virtual combos
+  top-3 plus a custom-model box. Paste the exact `Authorization`
+  header value; the page sends it as the `Authorization` header to
+  `GET /ui/preview?model=<id>&top=N`, which hashes it with the same
+  seeded hash the request path pins with and returns the ordered
+  candidates with every stored column (prices, effective cost,
+  class, tier/score, tools, decisions, promo, free, availability,
+  rank) plus the sticky pick (with this key) vs the fresh pick (no
+  session) and the session hash. The raw key is never logged and
+  never stored; previews never create pins. Smart ids preview as an
+  explanatory rejection (their tier comes from the live classifier
+  leg). Missing `model` answers 400, no router answers 503.
 - Catalog: `CATALOG_UI=1 catalog-ui --dir <artifact-dir>
   [--port 8080] [--log-file <path>]` serves a browser over the
   published artifacts: run history (manifests newest-first with

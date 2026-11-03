@@ -2144,6 +2144,1108 @@ impl Router {
     }
 }
 
+/// Fixed inspector ids (Iter 29): the non-smart virtual menu. Smart ids
+/// need a live classifier leg, so they preview as an explanatory
+/// rejection instead of a candidate list.
+pub const FIXED_PREVIEW_IDS: [&str; 10] = [
+    "openrouter/pair/free",
+    "openrouter/pair/low",
+    "openrouter/pair/think",
+    "openrouter/pair/decision",
+    "openrouter/pair/decision/free",
+    "openrouter/pair/privacy/free",
+    "openrouter/pair/privacy/low",
+    "openrouter/pair/privacy/think",
+    "openrouter/pair/privacy/decision",
+    "openrouter/pair/privacy/decision/free",
+];
+
+/// One preview row: every stored column the router actually reads,
+/// plus the computed facts the UI shows alongside them.
+#[derive(Debug, Clone)]
+pub struct PreviewCandidate {
+    pub model_id: String,
+    pub provider: String,
+    pub tag: Option<String>,
+    pub price_prompt: Option<f64>,
+    pub price_completion: Option<f64>,
+    pub price_cache_read: Option<f64>,
+    pub price_cache_write: Option<f64>,
+    pub effective_cost: Option<f64>,
+    pub promo_discount: Option<f64>,
+    pub precision_class: Option<String>,
+    pub quality_tier: Option<String>,
+    pub quality_score: Option<f64>,
+    pub supports_tools: Option<bool>,
+    pub supports_decisions: Option<bool>,
+    pub free_eligible: bool,
+    pub throttled: bool,
+    pub rank_index: Option<usize>,
+    pub sticky_match: bool,
+}
+
+/// The pick for one session view: backend model + provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewDecision {
+    pub model_id: String,
+    pub provider: String,
+    pub tag: Option<String>,
+    pub precision_class: Option<String>,
+    pub sticky: bool,
+}
+
+/// Read-only routing preview (Iter 29): the ordered top-N candidates
+/// for one `model` value plus the sticky pick (with this key) and the
+/// fresh pick (no session). Never stores a pin — inspecting must not
+/// change routing. Plain-request view: default constraints, no tools,
+/// no budget cap.
+#[derive(Debug, Clone)]
+pub struct Preview {
+    pub model_field: String,
+    pub session_namespace: String,
+    pub session_key_hash: Option<u64>,
+    pub fresh: Option<PreviewDecision>,
+    pub sticky: Option<PreviewDecision>,
+    pub sticky_hit: bool,
+    pub candidates: Vec<PreviewCandidate>,
+    pub rejection: Option<RouteRejection>,
+    pub note: Option<String>,
+}
+
+impl Router {
+    /// Opaque session hash for one raw Authorization value + namespace.
+    /// Same function the request path pins with — the UI shows this
+    /// hash so operators can confirm which stored pin a key maps to.
+    /// The raw key never leaves this call.
+    pub fn session_hash_for(&self, authorization: &str, namespace: &str) -> u64 {
+        self.session_key(authorization, namespace).0
+    }
+
+    /// True while a 429 cool-down still covers this pair.
+    pub fn is_throttled_pair(&self, model_id: &str, provider: &str) -> bool {
+        let throttled = self.throttled.read().unwrap_or_else(|e| e.into_inner());
+        throttled
+            .get(&(model_id.to_string(), provider.to_string()))
+            .is_some_and(|until| *until > Instant::now())
+    }
+
+    /// Preview one `model` value: ordered top-N without pinning.
+    /// `top` clamps to 1..=20. `authorization` is the raw header value
+    /// (or `None` for anonymous); only its hash is retained in the
+    /// result.
+    pub fn preview(&self, model_field: &str, authorization: Option<&str>, top: usize) -> Preview {
+        let top = top.clamp(1, 20);
+        let snapshot = self.snapshot.read().unwrap_or_else(|e| e.into_inner());
+        let ranking = self.ranking.read().unwrap_or_else(|e| e.into_inner());
+        let now = now_unix();
+        let constraints = ProviderConstraints::default();
+
+        // Smart ids never preview candidates: the tier comes from a
+        // live classifier leg, not the local index.
+        if is_smart_fallback(model_field) {
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization
+                    .map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "invalid_model",
+                    message: format!(
+                        "{model_field:?} is not a virtual model: smart ids take no /fallback/ suffix"
+                    ),
+                }),
+                note: Some(
+                    "smart ids replace the fallback chain with a classifier leg.".to_string(),
+                ),
+            };
+        }
+        if let Some(smart) = parse_smart(model_field) {
+            let _ = smart;
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "smart_requires_classifier",
+                    message: "smart ids need a configured classifier leg".to_string(),
+                }),
+                note: Some(
+                    "preview shows local tiers only; smart picks its tier per request.".to_string(),
+                ),
+            };
+        }
+
+        // Virtual ids resolve before catalog lookup, mirroring
+        // `decide_constrained` + `route_inner`.
+        if let Some(virtual_model) = parse_virtual(model_field) {
+            if let Some(pinned) = virtual_model.pinned_model.clone() {
+                let first = self.preview_pinned_list(
+                    &snapshot,
+                    ranking.as_ref(),
+                    &pinned,
+                    model_field,
+                    authorization,
+                    &constraints,
+                    now,
+                    top,
+                );
+                match (first.rejection.is_none(), &virtual_model.fallback) {
+                    (true, _) => return first,
+                    (false, None) => return first,
+                    (false, Some(target)) => {
+                        let mut fb = self.preview_tier_list(
+                            &snapshot,
+                            ranking.as_ref(),
+                            target,
+                            model_field,
+                            authorization,
+                            &constraints,
+                            now,
+                            top,
+                        );
+                        fb.note = Some(format!(
+                            "pinned model has nothing eligible; showing fallback {target:?}."
+                        ));
+                        return fb;
+                    }
+                }
+            }
+            match virtual_model.tier {
+                VirtualTier::Free => {
+                    let free = self.preview_free_list(
+                        &snapshot,
+                        ranking.as_ref(),
+                        &[],
+                        model_field,
+                        authorization,
+                        &constraints,
+                        now,
+                        top,
+                    );
+                    match (free.rejection.is_none(), &virtual_model.fallback) {
+                        (true, _) => return free,
+                        (false, None) => return free,
+                        (false, Some(target)) => {
+                            let mut fb = self.preview_tier_list(
+                                &snapshot,
+                                ranking.as_ref(),
+                                target,
+                                model_field,
+                                authorization,
+                                &constraints,
+                                now,
+                                top,
+                            );
+                            fb.note = Some(format!("free exhausted; showing fallback {target:?}."));
+                            return fb;
+                        }
+                    }
+                }
+                VirtualTier::Decision => {
+                    let first = self.preview_decision_list(
+                        &snapshot,
+                        ranking.as_ref(),
+                        model_field,
+                        authorization,
+                        &constraints,
+                        now,
+                        virtual_model.free_only,
+                        top,
+                    );
+                    match (first.rejection.is_none(), &virtual_model.fallback) {
+                        (true, _) => return first,
+                        (false, None) => return first,
+                        (false, Some(target)) => {
+                            let mut fb = self.preview_tier_list(
+                                &snapshot,
+                                ranking.as_ref(),
+                                target,
+                                model_field,
+                                authorization,
+                                &constraints,
+                                now,
+                                top,
+                            );
+                            fb.note = Some(format!(
+                                "decision/free exhausted; showing fallback {target:?}."
+                            ));
+                            return fb;
+                        }
+                    }
+                }
+                VirtualTier::Smart | VirtualTier::SmartMax => {
+                    return Preview {
+                        model_field: model_field.to_string(),
+                        session_namespace: model_field.to_string(),
+                        session_key_hash: authorization
+                            .map(|auth| self.session_key(auth, model_field).0),
+                        fresh: None,
+                        sticky: None,
+                        sticky_hit: false,
+                        candidates: Vec::new(),
+                        rejection: Some(RouteRejection {
+                            code: "smart_requires_classifier",
+                            message: "smart ids need a configured classifier leg".to_string(),
+                        }),
+                        note: None,
+                    };
+                }
+                tier => {
+                    return self.preview_ordered_virtual_list(
+                        &snapshot,
+                        ranking.as_ref(),
+                        model_field,
+                        authorization,
+                        &constraints,
+                        now,
+                        tier,
+                        top,
+                    );
+                }
+            }
+        }
+        // Legacy free meta-model: session namespace is the meta id.
+        if model_field == FREE_MODEL || model_field.starts_with(&format!("{FREE_MODEL}/")) {
+            let tags: Vec<String> = model_field[FREE_MODEL.len()..]
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            let mut out = self.preview_free_list(
+                &snapshot,
+                ranking.as_ref(),
+                &tags,
+                FREE_MODEL,
+                authorization,
+                &constraints,
+                now,
+                top,
+            );
+            out.model_field = model_field.to_string();
+            return out;
+        }
+        // `lowest` tag rewrites cross-model like the virtual tiers.
+        if let Some((model_id, tags)) = split_model(&snapshot, model_field) {
+            if orientation_from(&tags) == Orientation::Lowest {
+                return self.preview_lowest_list(
+                    &snapshot,
+                    ranking.as_ref(),
+                    model_field,
+                    authorization,
+                    &constraints,
+                    now,
+                    top,
+                );
+            }
+            return self.preview_direct_list(
+                &snapshot,
+                ranking.as_ref(),
+                &model_id,
+                &tags,
+                model_field,
+                authorization,
+                &constraints,
+                now,
+                top,
+            );
+        }
+        // Pinned-provider direct routes carry no catalog choice.
+        if split_pinned(model_field).is_some() {
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: None,
+                note: Some("pinned-provider route bypasses the catalog.".to_string()),
+            };
+        }
+        Preview {
+            model_field: model_field.to_string(),
+            session_namespace: model_field.to_string(),
+            session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+            fresh: None,
+            sticky: None,
+            sticky_hit: false,
+            candidates: Vec::new(),
+            rejection: None,
+            note: Some("unknown model: passes through untouched.".to_string()),
+        }
+    }
+
+    /// Shared tier dispatch for fallback previews (Iter 21 targets).
+    #[allow(clippy::too_many_arguments)]
+    fn preview_tier_list(
+        &self,
+        snapshot: &Snapshot,
+        ranking: Option<&RankingDocument>,
+        tier: &str,
+        model_field: &str,
+        authorization: Option<&str>,
+        constraints: &ProviderConstraints,
+        now: u64,
+        top: usize,
+    ) -> Preview {
+        match tier {
+            "low" => self.preview_ordered_virtual_list(
+                snapshot,
+                ranking,
+                model_field,
+                authorization,
+                constraints,
+                now,
+                VirtualTier::Low,
+                top,
+            ),
+            "think" => self.preview_ordered_virtual_list(
+                snapshot,
+                ranking,
+                model_field,
+                authorization,
+                constraints,
+                now,
+                VirtualTier::Think,
+                top,
+            ),
+            "lowest" => self.preview_lowest_list(
+                snapshot,
+                ranking,
+                model_field,
+                authorization,
+                constraints,
+                now,
+                top,
+            ),
+            "decision" => self.preview_decision_list(
+                snapshot,
+                ranking,
+                model_field,
+                authorization,
+                constraints,
+                now,
+                false,
+                top,
+            ),
+            _ => Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "no_eligible_offering",
+                    message: format!("unknown fallback tier {tier:?}"),
+                }),
+                note: None,
+            },
+        }
+    }
+
+    /// Build one preview row from an offering + display context.
+    fn preview_row(
+        &self,
+        offering: &Offering,
+        ranking: Option<&RankingDocument>,
+        now: u64,
+        rank_index: Option<usize>,
+        sticky_match: bool,
+    ) -> PreviewCandidate {
+        PreviewCandidate {
+            model_id: offering.model_id.clone(),
+            provider: offering.provider_name.clone(),
+            tag: offering.tag.clone(),
+            price_prompt: offering.price_prompt,
+            price_completion: offering.price_completion,
+            price_cache_read: offering.price_cache_read,
+            price_cache_write: offering.price_cache_write,
+            effective_cost: inline_cost(offering),
+            promo_discount: offering.promo_discount,
+            precision_class: offering.precision_class.clone(),
+            quality_tier: offering.quality_tier.clone(),
+            quality_score: offering.quality_score,
+            supports_tools: offering.supports_tools,
+            supports_decisions: offering.supports_decisions,
+            free_eligible: free_eligible(ranking, &offering.model_id, offering, now),
+            throttled: self.is_throttled_pair(&offering.model_id, &offering.provider_name),
+            rank_index,
+            sticky_match,
+        }
+    }
+
+    /// Rank-doc position for one (model, class, provider, tag) triple.
+    fn preview_rank_index(
+        ranking: Option<&RankingDocument>,
+        model_id: &str,
+        class: &Option<String>,
+        orientation: Orientation,
+        offering: &Offering,
+    ) -> Option<usize> {
+        ranking
+            .and_then(|r| r.models.get(model_id))
+            .and_then(|classes| classes.iter().find(|c| &c.class == class))
+            .and_then(|class_ranking| {
+                let entries = match orientation {
+                    Orientation::Default => &class_ranking.default,
+                    Orientation::Price => &class_ranking.price,
+                    Orientation::Quality => &class_ranking.quality,
+                    Orientation::Lowest => &class_ranking.price,
+                };
+                entries
+                    .iter()
+                    .position(|e| e.provider == offering.provider_name && e.tag == offering.tag)
+            })
+    }
+
+    /// Finish a preview: order display rows fresh-first (throttled
+    /// last, like `skip_throttled`), resolve the sticky pin without
+    /// storing, and cut to `top`.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_preview(
+        &self,
+        model_field: &str,
+        session_ns: &str,
+        authorization: Option<&str>,
+        ordered_all: Vec<(Offering, Option<usize>)>,
+        ranking: Option<&RankingDocument>,
+        now: u64,
+        top: usize,
+        rejection: Option<RouteRejection>,
+        note: Option<String>,
+    ) -> Preview {
+        let session_key_hash = authorization.map(|auth| self.session_key(auth, session_ns).0);
+        let pin = authorization.and_then(|_| {
+            self.lookup_pin(&self.session_key(authorization.unwrap_or(""), session_ns))
+        });
+        // Fresh ordering: non-throttled first, then throttled — the
+        // display mirrors `skip_throttled` without dropping rows.
+        let fresh_pool: Vec<&(Offering, Option<usize>)> = ordered_all
+            .iter()
+            .filter(|(o, _)| !self.is_throttled_pair(&o.model_id, &o.provider_name))
+            .collect();
+        let throttled: Vec<&(Offering, Option<usize>)> = ordered_all
+            .iter()
+            .filter(|(o, _)| self.is_throttled_pair(&o.model_id, &o.provider_name))
+            .collect();
+        // Pin pool mirrors `skip_throttled`: a throttled pin loses to a
+        // fresh alternative, and only wins when everything is throttled.
+        let pin_pool: Vec<&(Offering, Option<usize>)> = if fresh_pool.is_empty() {
+            ordered_all.iter().collect()
+        } else {
+            fresh_pool.clone()
+        };
+        let sticky_offering: Option<&(Offering, Option<usize>)> = pin.as_ref().and_then(|pin| {
+            pin_pool
+                .iter()
+                .find(|(o, _)| {
+                    o.provider_name == pin.provider && o.precision_class == pin.precision_class
+                })
+                .copied()
+        });
+        let mut fresh_first: Vec<&(Offering, Option<usize>)> = fresh_pool;
+        if fresh_first.is_empty() {
+            fresh_first = ordered_all.iter().collect();
+        } else {
+            fresh_first.extend(throttled);
+        }
+        let fresh_pick = fresh_first.first().copied();
+        let sticky_pick = sticky_offering.or(fresh_pick);
+        let sticky_hit = match (sticky_pick, fresh_pick) {
+            (Some((s, _)), Some((f, _))) => {
+                s.provider_name != f.provider_name
+                    || s.precision_class != f.precision_class
+                    || s.model_id != f.model_id
+                    || s.tag != f.tag
+            }
+            _ => false,
+        };
+        let to_decision = |pick: Option<&(Offering, Option<usize>)>, sticky: bool| {
+            pick.map(|(o, _)| PreviewDecision {
+                model_id: o.model_id.clone(),
+                provider: o.provider_name.clone(),
+                tag: o.tag.clone(),
+                precision_class: o.precision_class.clone(),
+                sticky,
+            })
+        };
+        // Cut display rows to `top` off the fresh-first order, but
+        // always keep the sticky row visible when it would fall off.
+        let mut display: Vec<&(Offering, Option<usize>)> =
+            fresh_first.into_iter().take(top).collect();
+        if let Some(sticky) = sticky_offering {
+            if !display.iter().any(|(o, _)| {
+                o.provider_name == sticky.0.provider_name
+                    && o.precision_class == sticky.0.precision_class
+                    && o.model_id == sticky.0.model_id
+                    && o.tag == sticky.0.tag
+            }) {
+                display.push(sticky);
+            }
+        }
+        let candidates: Vec<PreviewCandidate> = display
+            .into_iter()
+            .map(|(o, rank)| {
+                let is_sticky = sticky_offering.is_some_and(|(s, _)| {
+                    s.provider_name == o.provider_name
+                        && s.precision_class == o.precision_class
+                        && s.model_id == o.model_id
+                        && s.tag == o.tag
+                });
+                self.preview_row(o, ranking, now, *rank, is_sticky)
+            })
+            .collect();
+        Preview {
+            model_field: model_field.to_string(),
+            session_namespace: session_ns.to_string(),
+            session_key_hash,
+            fresh: to_decision(fresh_pick, false),
+            sticky: to_decision(sticky_pick, sticky_hit),
+            sticky_hit,
+            candidates,
+            rejection: if fresh_pick.is_none() {
+                rejection
+            } else {
+                None
+            },
+            note,
+        }
+    }
+
+    /// Direct-model preview: majority class + oriented order.
+    #[allow(clippy::too_many_arguments)]
+    fn preview_direct_list(
+        &self,
+        snapshot: &Snapshot,
+        ranking: Option<&RankingDocument>,
+        model_id: &str,
+        tags: &[String],
+        model_field: &str,
+        authorization: Option<&str>,
+        constraints: &ProviderConstraints,
+        now: u64,
+        top: usize,
+    ) -> Preview {
+        let orientation = orientation_from(tags);
+        let offerings = match snapshot.models.get(model_id) {
+            Some(offerings) if !offerings.is_empty() => offerings,
+            _ => {
+                return Preview {
+                    model_field: model_field.to_string(),
+                    session_namespace: model_id.to_string(),
+                    session_key_hash: authorization.map(|auth| self.session_key(auth, model_id).0),
+                    fresh: None,
+                    sticky: None,
+                    sticky_hit: false,
+                    candidates: Vec::new(),
+                    rejection: None,
+                    note: Some("unknown model: passes through untouched.".to_string()),
+                };
+            }
+        };
+        let Some(class) = majority_class(offerings) else {
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_id.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_id).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "no_eligible_offering",
+                    message: format!("no offering is currently eligible for {model_id:?}"),
+                }),
+                note: None,
+            };
+        };
+        let refs: Vec<&Offering> = offerings
+            .iter()
+            .filter(|o| {
+                o.precision_class == class
+                    && constraints.allows(&o.provider_name)
+                    && constraints.budget_allows(o)
+                    && constraints.tool_allows(o)
+            })
+            .collect();
+        let order = ordered(ranking, model_id, &class, orientation, &refs);
+        let ordered_all: Vec<(Offering, Option<usize>)> = order
+            .into_iter()
+            .map(|o| {
+                let rank = Self::preview_rank_index(ranking, model_id, &class, orientation, o);
+                (o.clone(), rank)
+            })
+            .collect();
+        let rejection = if ordered_all.is_empty() {
+            Some(RouteRejection {
+                code: "no_eligible_offering",
+                message: format!("no offering is currently eligible for {model_id:?}"),
+            })
+        } else {
+            None
+        };
+        self.finish_preview(
+            model_field,
+            model_id,
+            authorization,
+            ordered_all,
+            ranking,
+            now,
+            top,
+            rejection,
+            None,
+        )
+    }
+
+    /// Free-tier preview: free pool + majority class + oriented order.
+    #[allow(clippy::too_many_arguments)]
+    fn preview_free_list(
+        &self,
+        snapshot: &Snapshot,
+        ranking: Option<&RankingDocument>,
+        tags: &[String],
+        session_ns: &str,
+        authorization: Option<&str>,
+        constraints: &ProviderConstraints,
+        now: u64,
+        top: usize,
+    ) -> Preview {
+        let orientation = orientation_from(tags);
+        let free: Vec<Offering> = snapshot
+            .models
+            .iter()
+            .flat_map(|(model_id, offerings)| {
+                offerings.iter().filter(|o| {
+                    constraints.allows(&o.provider_name) && free_eligible(ranking, model_id, o, now)
+                })
+            })
+            .cloned()
+            .collect();
+        if free.is_empty() {
+            return Preview {
+                model_field: session_ns.to_string(),
+                session_namespace: session_ns.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, session_ns).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "no_eligible_offering",
+                    message: "no free offering is currently eligible".to_string(),
+                }),
+                note: None,
+            };
+        }
+        let Some(class) = majority_class(&free) else {
+            return Preview {
+                model_field: session_ns.to_string(),
+                session_namespace: session_ns.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, session_ns).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "no_eligible_offering",
+                    message: "no free offering is currently eligible".to_string(),
+                }),
+                note: None,
+            };
+        };
+        let candidates: Vec<&Offering> =
+            free.iter().filter(|o| o.precision_class == class).collect();
+        let order = ordered(ranking, FREE_MODEL, &class, orientation, &candidates);
+        let ordered_all: Vec<(Offering, Option<usize>)> = order
+            .into_iter()
+            .map(|o| {
+                let rank = Self::preview_rank_index(ranking, FREE_MODEL, &class, orientation, o);
+                (o.clone(), rank)
+            })
+            .collect();
+        self.finish_preview(
+            session_ns,
+            session_ns,
+            authorization,
+            ordered_all,
+            ranking,
+            now,
+            top,
+            Some(RouteRejection {
+                code: "no_eligible_offering",
+                message: "no free offering is currently eligible".to_string(),
+            }),
+            None,
+        )
+    }
+
+    /// Cross-model `low`/`think` preview: paid + known class + floor,
+    /// then cheapest cost or best quality.
+    #[allow(clippy::too_many_arguments)]
+    fn preview_ordered_virtual_list(
+        &self,
+        snapshot: &Snapshot,
+        ranking: Option<&RankingDocument>,
+        model_field: &str,
+        authorization: Option<&str>,
+        constraints: &ProviderConstraints,
+        now: u64,
+        tier: VirtualTier,
+        top: usize,
+    ) -> Preview {
+        let tier_name = match tier {
+            VirtualTier::Low => "low",
+            VirtualTier::Think => "think",
+            _ => "low",
+        };
+        let base: Vec<&Offering> = snapshot
+            .models
+            .values()
+            .flatten()
+            .filter(|o| {
+                constraints.allows(&o.provider_name)
+                    && inline_cost(o).is_some_and(|cost| cost > 0.0)
+                    && is_known_precision_class(o.precision_class.as_deref().unwrap_or("unknown"))
+            })
+            .collect();
+        if base.is_empty() {
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "no_eligible_offering",
+                    message: format!("no offering is eligible for the {tier_name} tier"),
+                }),
+                note: None,
+            };
+        }
+        let floored: Vec<&Offering> = base
+            .into_iter()
+            .filter(|o| Self::quality_rank(o.quality_tier.as_deref()) >= Self::tier_floor(tier))
+            .collect();
+        if floored.is_empty() {
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "quality_floor_unmet",
+                    message: format!("no offering meets the {tier_name} tier quality floor"),
+                }),
+                note: None,
+            };
+        }
+        let mut sorted: Vec<&Offering> = floored;
+        match tier {
+            VirtualTier::Low => sorted.sort_by(|a, b| {
+                inline_cost(a)
+                    .partial_cmp(&inline_cost(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.model_id.cmp(&b.model_id))
+                    .then_with(|| a.provider_name.cmp(&b.provider_name))
+            }),
+            _ => sorted.sort_by(|a, b| {
+                compare_signals(
+                    &Self::virtual_signals(a),
+                    &Self::virtual_signals(b),
+                    RankOrientation::Quality,
+                )
+            }),
+        }
+        let ordered_all: Vec<(Offering, Option<usize>)> = sorted
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| (o.clone(), Some(i)))
+            .collect();
+        let _ = now;
+        self.finish_preview(
+            model_field,
+            model_field,
+            authorization,
+            ordered_all,
+            ranking,
+            now,
+            top,
+            Some(RouteRejection {
+                code: "no_eligible_offering",
+                message: format!("no offering is eligible for the {tier_name} tier"),
+            }),
+            None,
+        )
+    }
+
+    /// Cross-model `lowest` preview: cheapest paid, no floor.
+    #[allow(clippy::too_many_arguments)]
+    fn preview_lowest_list(
+        &self,
+        snapshot: &Snapshot,
+        ranking: Option<&RankingDocument>,
+        model_field: &str,
+        authorization: Option<&str>,
+        constraints: &ProviderConstraints,
+        now: u64,
+        top: usize,
+    ) -> Preview {
+        let base: Vec<&Offering> = snapshot
+            .models
+            .values()
+            .flatten()
+            .filter(|o| {
+                constraints.allows(&o.provider_name)
+                    && inline_cost(o).is_some_and(|cost| cost > 0.0)
+                    && is_known_precision_class(o.precision_class.as_deref().unwrap_or("unknown"))
+            })
+            .collect();
+        if base.is_empty() {
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "no_eligible_offering",
+                    message: "no paid offering is currently eligible".to_string(),
+                }),
+                note: None,
+            };
+        }
+        let mut sorted: Vec<&Offering> = base;
+        sorted.sort_by(|a, b| {
+            inline_cost(a)
+                .partial_cmp(&inline_cost(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.model_id.cmp(&b.model_id))
+                .then_with(|| a.provider_name.cmp(&b.provider_name))
+        });
+        let ordered_all: Vec<(Offering, Option<usize>)> = sorted
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| (o.clone(), Some(i)))
+            .collect();
+        self.finish_preview(
+            model_field,
+            model_field,
+            authorization,
+            ordered_all,
+            ranking,
+            now,
+            top,
+            Some(RouteRejection {
+                code: "no_eligible_offering",
+                message: "no paid offering is currently eligible".to_string(),
+            }),
+            None,
+        )
+    }
+
+    /// `decision` tier preview: cheapest decisions-capable offering.
+    #[allow(clippy::too_many_arguments)]
+    fn preview_decision_list(
+        &self,
+        snapshot: &Snapshot,
+        ranking: Option<&RankingDocument>,
+        model_field: &str,
+        authorization: Option<&str>,
+        constraints: &ProviderConstraints,
+        now: u64,
+        free_only: bool,
+        top: usize,
+    ) -> Preview {
+        let scope = if free_only { "free " } else { "" };
+        let base: Vec<&Offering> = snapshot
+            .models
+            .values()
+            .flatten()
+            .filter(|o| {
+                constraints.allows(&o.provider_name)
+                    && o.supports_decisions == Some(true)
+                    && (free_only || inline_cost(o).is_some_and(|cost| cost > 0.0))
+                    && (!free_only || free_eligible(ranking, &o.model_id, o, now))
+            })
+            .collect();
+        if base.is_empty() {
+            return Preview {
+                model_field: model_field.to_string(),
+                session_namespace: model_field.to_string(),
+                session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+                fresh: None,
+                sticky: None,
+                sticky_hit: false,
+                candidates: Vec::new(),
+                rejection: Some(RouteRejection {
+                    code: "no_eligible_offering",
+                    message: format!("no decisions-capable {scope}offering is currently eligible"),
+                }),
+                note: None,
+            };
+        }
+        let mut sorted: Vec<&Offering> = base;
+        sorted.sort_by(|a, b| {
+            inline_cost(a)
+                .partial_cmp(&inline_cost(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.model_id.cmp(&b.model_id))
+                .then_with(|| a.provider_name.cmp(&b.provider_name))
+        });
+        let ordered_all: Vec<(Offering, Option<usize>)> = sorted
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| (o.clone(), Some(i)))
+            .collect();
+        self.finish_preview(
+            model_field,
+            model_field,
+            authorization,
+            ordered_all,
+            ranking,
+            now,
+            top,
+            Some(RouteRejection {
+                code: "no_eligible_offering",
+                message: format!("no decisions-capable {scope}offering is currently eligible"),
+            }),
+            None,
+        )
+    }
+
+    /// Pinned-model preview: best provider for one catalog model.
+    #[allow(clippy::too_many_arguments)]
+    fn preview_pinned_list(
+        &self,
+        snapshot: &Snapshot,
+        ranking: Option<&RankingDocument>,
+        model_id: &str,
+        model_field: &str,
+        authorization: Option<&str>,
+        constraints: &ProviderConstraints,
+        now: u64,
+        top: usize,
+    ) -> Preview {
+        let mk_empty = |message: String, code: &'static str| Preview {
+            model_field: model_field.to_string(),
+            session_namespace: model_field.to_string(),
+            session_key_hash: authorization.map(|auth| self.session_key(auth, model_field).0),
+            fresh: None,
+            sticky: None,
+            sticky_hit: false,
+            candidates: Vec::new(),
+            rejection: Some(RouteRejection { code, message }),
+            note: None,
+        };
+        let offerings = match snapshot.models.get(model_id) {
+            Some(offerings) if !offerings.is_empty() => offerings,
+            _ => {
+                return mk_empty(
+                    format!("unknown model {model_id:?}: not in catalog"),
+                    "no_eligible_offering",
+                );
+            }
+        };
+        let budgeted: Vec<&Offering> = offerings
+            .iter()
+            .filter(|o| {
+                constraints.allows(&o.provider_name)
+                    && constraints.tool_allows(o)
+                    && constraints.budget_allows(o)
+            })
+            .collect();
+        if budgeted.is_empty() {
+            return mk_empty(
+                format!("no offering is currently eligible for {model_id:?}"),
+                "no_eligible_offering",
+            );
+        }
+        let class = majority_class_owned(&budgeted);
+        let ranked = ranking
+            .and_then(|r| r.models.get(model_id))
+            .and_then(|classes| classes.iter().find(|c| c.class == class))
+            .map(|c| &c.default);
+        let mut ordered_all: Vec<(Offering, Option<usize>)> = if let Some(entries) = ranked {
+            let mut order: Vec<&Offering> = Vec::with_capacity(budgeted.len());
+            let mut rest: Vec<&Offering> = budgeted.clone();
+            for entry in entries {
+                if let Some(pos) = rest
+                    .iter()
+                    .position(|o| o.provider_name == entry.provider && o.tag == entry.tag)
+                {
+                    order.push(rest.remove(pos));
+                }
+            }
+            order.extend(rest);
+            order
+                .into_iter()
+                .map(|o| {
+                    let rank = entries
+                        .iter()
+                        .position(|e| e.provider == o.provider_name && e.tag == o.tag);
+                    (o.clone(), rank)
+                })
+                .collect()
+        } else {
+            let mut sorted = budgeted;
+            sorted.sort_by(|a, b| {
+                inline_cost(a)
+                    .partial_cmp(&inline_cost(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.provider_name.cmp(&b.provider_name))
+                    .then_with(|| a.tag.cmp(&b.tag))
+            });
+            sorted
+                .into_iter()
+                .enumerate()
+                .map(|(i, o)| (o.clone(), Some(i)))
+                .collect()
+        };
+        // Display keeps the full eligible set; the finish step orders
+        // throttled last and cuts to `top`.
+        let _ = class;
+        let rejection = if ordered_all.is_empty() {
+            Some(RouteRejection {
+                code: "no_eligible_offering",
+                message: format!("no offering is currently eligible for {model_id:?}"),
+            })
+        } else {
+            None
+        };
+        // Preserve ranking positions already attached above.
+        ordered_all.truncate(ordered_all.len());
+        self.finish_preview(
+            model_field,
+            model_field,
+            authorization,
+            ordered_all,
+            ranking,
+            now,
+            top,
+            rejection,
+            None,
+        )
+    }
+}
+
 /// Providers with their own upstream, addressed by id prefix
 /// (Iter 16). Anything else routes via OpenRouter as before.
 pub const PINNED_PROVIDERS: &[&str] = &["modal", "baseten"];

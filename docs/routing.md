@@ -208,6 +208,25 @@ session.
   requests are exactly-once (no retry, no throttle steering) and
   carry the provider in `x-pennyrouter-provider` like routed ones.
 
+## Routing inspector (Iter 29)
+
+`GET /ui/preview?model=<id>&top=N` (behind `GATEWAY_UI=1`) previews
+one `model` value without routing or pinning anything: the ordered
+top-N candidates with every stored column the router reads (prompt /
+completion / cache-read / cache-write prices, blended effective
+cost, precision class, quality tier/score, tool + decisions support,
+promo discount, free eligibility, throttle availability, rank-doc
+index) plus the fresh pick (no session) and the sticky pick (with
+the given key) with the session namespace and hash. The key travels
+as the `Authorization` header — the same raw value sessions pin
+with — so it never lands in URLs or logs, and the preview never
+stores a pin. Throttled pins fall through exactly like the request
+path; fallback ids preview the leg that would serve; smart ids
+preview as `smart_requires_classifier` because their tier comes
+from the live classifier leg, not the local index. The `/ui` page
+renders the ten fixed non-smart virtual combos top-3 plus a custom
+model box on top of this endpoint.
+
 ## Smart classifier (Iter 26)
 
 `openrouter/pair/smart` (tiers `free`/`lowest`/`low`),
