@@ -107,6 +107,14 @@ async fn spawn_gateway(upstream: SocketAddr, db: &std::path::Path) -> SocketAddr
     addr
 }
 
+async fn spawn_with_state(state: pennyrouter_gateway::AppState) -> SocketAddr {
+    let app = pennyrouter_gateway::app_with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
 async fn spawn_mock(app: Router) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1281,6 +1289,73 @@ async fn post_chat_body(gw: SocketAddr, model: &str, content: &str) -> reqwest::
         .send()
         .await
         .unwrap()
+}
+
+/// Extended menu: virtual ids small-first, then popular OpenRouter
+/// pins in stored order, then operator-nominated provider ids — but
+/// only for configured providers (baseten is listed, not configured,
+/// so it stays out).
+#[tokio::test]
+async fn menu_lists_virtual_popular_and_configured_providers() {
+    let db = scratch_db("menu-extended");
+    build_db(&db);
+    let catalog = Catalog::open(&db).unwrap();
+    catalog
+        .set_meta(
+            "popular_models",
+            r#"[{"slug":"x/y","tokens":9},{"slug":"a/b","tokens":7}]"#,
+        )
+        .unwrap();
+    drop(catalog);
+    let mock = spawn_mock(mock_app(
+        Arc::new(Mutex::new(Upstream::default())),
+        vec![],
+        vec![],
+    ))
+    .await;
+    let router = Arc::new(pennyrouter_gateway::routing::Router::load(&db).expect("router loads"));
+    let state = pennyrouter_gateway::AppState::new(format!("http://{mock}"))
+        .with_router(router)
+        .with_upstream("modal", "http://127.0.0.1:9")
+        .with_modal_models(vec!["m-one".to_string(), "m-two".to_string()])
+        .with_baseten_models(vec!["b-one".to_string()]);
+    let gw = spawn_with_state(state).await;
+
+    let res = client()
+        .get(format!("http://{gw}/v1/models"))
+        .header("authorization", API_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: serde_json::Value = res.json().await.unwrap();
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    let expected: Vec<&str> = vec![
+        "openrouter/pair/free",
+        "openrouter/pair/privacy/free",
+        "openrouter/pair/low",
+        "openrouter/pair/privacy/low",
+        "openrouter/pair/think",
+        "openrouter/pair/privacy/think",
+        "openrouter/pair/decision",
+        "openrouter/pair/privacy/decision",
+        "openrouter/pair/decision/free",
+        "openrouter/pair/privacy/decision/free",
+        "openrouter/pair/smart",
+        "openrouter/pair/privacy/smart",
+        "openrouter/pair/smart/max",
+        "openrouter/pair/privacy/smart/max",
+        "openrouter/x/y",
+        "openrouter/a/b",
+        "modal/m-one",
+        "modal/m-two",
+    ];
+    assert_eq!(ids, expected);
 }
 
 fn serving_provider(res: &reqwest::Response) -> String {

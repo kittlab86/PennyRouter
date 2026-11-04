@@ -300,6 +300,22 @@ pub struct AppState {
     classifier: Option<ClassifierConfig>,
     upstream_slots: Arc<Semaphore>,
     queue_slots: Arc<Semaphore>,
+    modal_models: Vec<String>,
+    baseten_models: Vec<String>,
+}
+
+/// Comma-separated env model list (`MODAL_MODELS`, `BASETEN_MODELS`):
+/// operator-nominated ids advertised on the menu when the provider
+/// is configured. Empty entries dropped, never guessed.
+fn env_model_list(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .map(|raw| {
+            raw.split(',')
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl AppState {
@@ -339,7 +355,23 @@ impl AppState {
             classifier: None,
             upstream_slots: Arc::new(Semaphore::new(max_upstream)),
             queue_slots: Arc::new(Semaphore::new(limits.max_queued)),
+            modal_models: Vec::new(),
+            baseten_models: Vec::new(),
         }
+    }
+
+    /// Operator-nominated Modal ids for the menu (test seam; production
+    /// reads `MODAL_MODELS` in `from_env`).
+    pub fn with_modal_models(mut self, models: Vec<String>) -> Self {
+        self.modal_models = models;
+        self
+    }
+
+    /// Operator-nominated Baseten ids for the menu (test seam; production
+    /// reads `BASETEN_MODELS` in `from_env`).
+    pub fn with_baseten_models(mut self, models: Vec<String>) -> Self {
+        self.baseten_models = models;
+        self
     }
 
     /// Register a provider-pinned upstream (Iter 16): `modal/<model>`
@@ -470,6 +502,10 @@ impl AppState {
         // Management writes (Iter 25): proxied only on explicit opt-in,
         // otherwise denied with 403 before touching upstream.
         state.allow_management_proxy = env_flag("ALLOW_MANAGEMENT_PROXY");
+        // Menu-nominated provider models: advertised on `/v1/models`
+        // only when the provider itself is configured.
+        state.modal_models = env_model_list("MODAL_MODELS");
+        state.baseten_models = env_model_list("BASETEN_MODELS");
         match std::env::var("CATALOG_DB") {
             Err(_) => state,
             Ok(path) => match routing::Router::load(&path) {
@@ -848,7 +884,40 @@ async fn ui_page(State(state): State<AppState>) -> Response {
             for id in routing::VIRTUAL_MODELS {
                 page.push_str(&format!("<li>{}</li>", esc(id)));
             }
-            page.push_str("</ul><h2>Models</h2>");
+            page.push_str("</ul>");
+            // Popularity pins: top OpenRouter models (menu pins, served
+            // passthrough) and hot apps, with the citation timestamp.
+            // The Data API publishes no per-app models, so apps are
+            // informational only — the gateway never keys off caller
+            // identity (no Referer/title collection).
+            let (popular, apps, as_of) = router.popularity();
+            if !popular.is_empty() || !apps.is_empty() {
+                page.push_str("<h2>Popular</h2>");
+                if !popular.is_empty() {
+                    page.push_str("<p>Top models by tokens, trailing week:</p><ul>");
+                    for slug in &popular {
+                        page.push_str(&format!("<li>openrouter/{}</li>", esc(slug)));
+                    }
+                    page.push_str("</ul>");
+                }
+                if !apps.is_empty() {
+                    page.push_str(
+                        "<p>Hot apps (informational — no per-app models published):</p><ul>",
+                    );
+                    for app in &apps {
+                        page.push_str(&format!("<li>{}</li>", esc(app)));
+                    }
+                    page.push_str("</ul>");
+                }
+                page.push_str(&format!(
+                    "<p><small>Popularity: OpenRouter Data API{}.</small></p>",
+                    as_of
+                        .as_deref()
+                        .map(|when| format!(", as of {}", esc(when)))
+                        .unwrap_or_default(),
+                ));
+            }
+            page.push_str("<h2>Models</h2>");
             for (model_id, entries) in &summary.models {
                 page.push_str(&format!("<h3>{}</h3>", esc(model_id)));
                 page.push_str(
@@ -1146,19 +1215,40 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-/// Curated virtual-model menu (Iter 13, fourteen ids today): the
-/// `VIRTUAL_MODELS` list in OpenAI list shape, served locally
-/// instead of proxied.
-async fn models_list() -> Response {
+/// Extensive model menu in OpenAI list shape, served locally instead
+/// of proxied: the static virtual ids first (small tiers first), then
+/// popular OpenRouter pins (`openrouter/<slug>`, top tokens over the
+/// trailing week — served passthrough, no routing change), then
+/// operator-nominated `modal/…` / `baseten/…` ids, each only when its
+/// provider is configured. Virtual picks are priced and filtered
+/// live, so the virtual section stays static by design; pins ride the
+/// catalog artifact (empty on old or keyless syncs).
+async fn models_list(State(state): State<AppState>) -> Response {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let mut ids: Vec<String> = crate::routing::VIRTUAL_MODELS
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    if let Some(router) = state.router.as_ref() {
+        let (popular, _, _) = router.popularity();
+        ids.extend(popular.iter().map(|slug| format!("openrouter/{slug}")));
+    }
+    for (provider, models) in [
+        ("modal", &state.modal_models),
+        ("baseten", &state.baseten_models),
+    ] {
+        if state.pinned_upstream(provider).is_some() {
+            ids.extend(models.iter().map(|id| format!("{provider}/{id}")));
+        }
+    }
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "object": "list",
-            "data": crate::routing::VIRTUAL_MODELS
+            "data": ids
                 .iter()
                 .map(|id| serde_json::json!({
                     "id": id,

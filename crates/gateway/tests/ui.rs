@@ -146,6 +146,84 @@ async fn ui_enabled_shows_ranking_and_metrics() {
     assert!(body.contains("pennyrouter_"), "metrics text embedded");
 }
 
+/// Popularity section: pins, hot apps, and the citation timestamp
+/// render when the artifact carries them.
+#[tokio::test]
+async fn ui_shows_popular_section() {
+    use pennyrouter_catalog::{Catalog, EndpointRow, ModelRow};
+    let _guard = lock_env().await;
+    std::env::set_var("GATEWAY_UI", "1");
+    let (mock, _) = spawn_mock().await;
+    let db = scratch_db("popular");
+    let _ = std::fs::remove_file(&db);
+    let catalog = Catalog::open(&db).unwrap();
+    catalog.init().unwrap();
+    catalog
+        .insert_model(&ModelRow {
+            model_id: "m/pop".to_string(),
+            name: "m/pop".to_string(),
+            source: "test".to_string(),
+            payload: "{}".to_string(),
+            fetched_at: "t".to_string(),
+        })
+        .unwrap();
+    catalog
+        .insert_endpoint(&EndpointRow {
+            id: 0,
+            model_id: "m/pop".to_string(),
+            provider_name: "PopProvider".to_string(),
+            payload: "{}".to_string(),
+            fetched_at: "t".to_string(),
+            price_prompt: Some(1.0),
+            price_completion: Some(2.0),
+            price_cache_read: None,
+            price_cache_write: None,
+            precision_class: None,
+            promo_discount: None,
+            processed_at: Some("t".to_string()),
+            supports_tools: None,
+            supports_decisions: None,
+            quality_tier: None,
+            quality_score: None,
+            judged_at: None,
+            judge_model: None,
+            judge_prompt: None,
+            price_override_tokens: None,
+        })
+        .unwrap();
+    catalog
+        .set_meta("popular_models", r#"[{"slug":"x/y","tokens":9}]"#)
+        .unwrap();
+    catalog
+        .set_meta(
+            "popular_apps",
+            r#"[{"name":"Cline","tokens":9,"requests":2}]"#,
+        )
+        .unwrap();
+    catalog.set_meta("popular_as_of", "2026-11-04").unwrap();
+    drop(catalog);
+    let router = Arc::new(pennyrouter_gateway::routing::Router::load(&db).expect("router loads"));
+    let state = pennyrouter_gateway::AppState::new(format!("http://{mock}")).with_router(router);
+    let app = pennyrouter_gateway::app_with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gw = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    std::env::remove_var("GATEWAY_UI");
+
+    let body = client()
+        .get(format!("http://{gw}/ui"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("Popular"), "popular section present");
+    assert!(body.contains("openrouter/x/y"), "pin listed");
+    assert!(body.contains("Cline"), "hot app listed");
+    assert!(body.contains("2026-11-04"), "citation timestamp shown");
+}
+
 #[tokio::test]
 async fn ui_flag_truthy_variants() {
     // I10(a): `true`/`yes` (any case) register /ui like `1`; anything

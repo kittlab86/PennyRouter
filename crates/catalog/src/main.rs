@@ -179,6 +179,30 @@ fn run() -> Result<(), String> {
     if args.process {
         run_processing(&catalog, &fetched_at).map_err(|e| e.to_string())?;
     }
+    // Popularity pins for the gateway menu: top OpenRouter models +
+    // hot apps from the public Data API (keyless syncs skip this —
+    // the menu still serves virtual ids + operator env lists). A
+    // failed fetch warns and publishes without pins; routing data
+    // must never depend on an auxiliary dataset.
+    match std::env::var("RANKINGS_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+    {
+        None => println!("no RANKINGS_API_KEY: publishing without popularity pins"),
+        Some(key) => match pennyrouter_catalog::fetch_popularity("https://openrouter.ai", &key) {
+            Ok(popularity) => {
+                println!(
+                    "popularity: {} models, {} apps (as of {})",
+                    popularity.models.len(),
+                    popularity.apps.len(),
+                    popularity.as_of.as_deref().unwrap_or("unknown")
+                );
+                pennyrouter_catalog::store_popularity(&catalog, &popularity)
+                    .map_err(|e| e.to_string())?;
+            }
+            Err(e) => println!("popularity fetch failed ({e}): publishing without pins"),
+        },
+    }
     drop(catalog);
     let (_db, manifest_path, manifest) = publish(
         &work_db,

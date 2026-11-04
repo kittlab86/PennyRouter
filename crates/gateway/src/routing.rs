@@ -78,6 +78,13 @@ pub struct Offering {
 pub struct Snapshot {
     pub models: HashMap<String, Vec<Offering>>,
     pub artifact_version: Option<String>,
+    /// Pinned popular slugs (`openrouter/<slug>` menu ids) from the
+    /// catalog's Data API fetch; empty on old/keyless artifacts.
+    pub popular_models: Vec<String>,
+    /// Hot app names for `/ui` (the API publishes no per-app models).
+    pub popular_apps: Vec<String>,
+    /// Citation timestamp for the popularity data (CC-BY).
+    pub popular_as_of: Option<String>,
 }
 
 /// Routing orientation: explicit price/quality/lowest tags, or the
@@ -281,20 +288,22 @@ pub fn parse_virtual(model_field: &str) -> Option<VirtualModel> {
 /// ids from Iter 24; smart ids from Iter 26). The menu is static: smart
 /// ids list even when no classifier is configured, in which case they
 /// fail closed with `classifier_not_configured` instead of serving.
+/// Ordered small-first: each tier's pair (base, then privacy) before
+/// the next tier up.
 pub const VIRTUAL_MODELS: [&str; 14] = [
     "openrouter/pair/free",
-    "openrouter/pair/low",
-    "openrouter/pair/think",
-    "openrouter/pair/decision",
-    "openrouter/pair/decision/free",
-    "openrouter/pair/smart",
-    "openrouter/pair/smart/max",
     "openrouter/pair/privacy/free",
+    "openrouter/pair/low",
     "openrouter/pair/privacy/low",
+    "openrouter/pair/think",
     "openrouter/pair/privacy/think",
+    "openrouter/pair/decision",
     "openrouter/pair/privacy/decision",
+    "openrouter/pair/decision/free",
     "openrouter/pair/privacy/decision/free",
+    "openrouter/pair/smart",
     "openrouter/pair/privacy/smart",
+    "openrouter/pair/smart/max",
     "openrouter/pair/privacy/smart/max",
 ];
 
@@ -710,6 +719,17 @@ impl Router {
             .is_empty()
     }
 
+    /// Popularity data for the menu and `/ui`: pinned slugs, hot app
+    /// names, citation timestamp. Empty on old or keyless artifacts.
+    pub fn popularity(&self) -> (Vec<String>, Vec<String>, Option<String>) {
+        let snapshot = self.snapshot.read().unwrap_or_else(|e| e.into_inner());
+        (
+            snapshot.popular_models.clone(),
+            snapshot.popular_apps.clone(),
+            snapshot.popular_as_of.clone(),
+        )
+    }
+
     /// Record a 429 from `(model_id, provider)` (Iter 13, header
     /// expiry since Iter 21): virtual picks steer around it until
     /// `until` elapses; the caller derives it from the response
@@ -853,9 +873,16 @@ impl Router {
                 .or_default()
                 .push(offering_from(&ep));
         }
+        // Popularity pins ride the same artifact (empty on old or
+        // keyless syncs); the menu and `/ui` read them from here.
+        let (popular_models, popular_apps, popular_as_of) =
+            pennyrouter_catalog::read_popularity(&catalog);
         Ok(Snapshot {
             models,
             artifact_version,
+            popular_models,
+            popular_apps,
+            popular_as_of,
         })
     }
 
@@ -3965,6 +3992,9 @@ mod tests {
                 ),
             ]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         }
     }
 
@@ -4079,6 +4109,9 @@ mod tests {
                 ),
             ]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         };
         let router = router_with(snapshot);
         for n in 0..20 {
@@ -4112,6 +4145,9 @@ mod tests {
                 ),
             ]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         };
         let router = router_with(snapshot);
         let auth = "Bearer free-probe";
@@ -4143,6 +4179,9 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         };
         let router = router_with(snapshot);
         let key = router.session_key("Bearer direct-probe", "m/direct");
@@ -4228,6 +4267,9 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         });
         let d = r.decide("meta/muse-spark/price", None).unwrap();
         assert_eq!(d.provider, "Dear"); // ranked first, New appended
@@ -4252,6 +4294,9 @@ mod tests {
                     ),
                 ]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -4282,6 +4327,9 @@ mod tests {
                         vec![priced("m/one", "Promo", 5.0, Some("high"))],
                     )]),
                     artifact_version: None,
+                    popular_models: Vec::new(),
+                    popular_apps: Vec::new(),
+                    popular_as_of: None,
                 }),
                 ranking: RwLock::new(None),
                 sessions: RwLock::new(HashMap::new()),
@@ -4327,6 +4375,9 @@ mod tests {
                     vec![priced("m/one", "Promo", 5.0, Some("high"))],
                 )]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -4355,6 +4406,9 @@ mod tests {
                     vec![priced("m/one", "Flash", 0.0, Some("standard"))],
                 )]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -4374,6 +4428,9 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         });
         let d = router.decide("openrouter/free", auth).unwrap();
         assert_eq!(d.provider, "Steadfast");
@@ -4398,6 +4455,9 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         });
         // Same session stays; a new session follows the new snapshot.
         let d = r.decide("meta/muse-spark/price", auth).unwrap();
@@ -4424,6 +4484,9 @@ mod tests {
                 vec![offering("Dear", Some(9.0), Some("high"))],
             )]),
             artifact_version: None,
+            popular_models: Vec::new(),
+            popular_apps: Vec::new(),
+            popular_as_of: None,
         });
         let d = r.decide("meta/muse-spark", auth).unwrap();
         assert_eq!(d.provider, "Dear");
@@ -4799,6 +4862,9 @@ mod tests {
                     ),
                 ]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -4898,6 +4964,9 @@ mod tests {
                     ("m/d".to_string(), vec![unpriceable]),
                 ]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -4963,6 +5032,9 @@ mod tests {
                     vec![priced("m/c", "C", 0.0, Some("standard"))],
                 )]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -5010,6 +5082,9 @@ mod tests {
                     ),
                 ]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -5057,6 +5132,9 @@ mod tests {
             snapshot: RwLock::new(Snapshot {
                 models: HashMap::from([("m/a".to_string(), vec![priced("m/a", "A", 2.0, None)])]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
@@ -5080,6 +5158,9 @@ mod tests {
             snapshot: RwLock::new(Snapshot {
                 models: HashMap::from([("m/a".to_string(), vec![priced("m/a", "A", 2.0, None)])]),
                 artifact_version: None,
+                popular_models: Vec::new(),
+                popular_apps: Vec::new(),
+                popular_as_of: None,
             }),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),

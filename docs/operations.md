@@ -113,10 +113,14 @@ header, optionally overridden per-request by
 Catalog pipeline: `CATALOG_IMAGE` (sync image tag), `SYNC_INTERVAL`
 (seconds between sync cycles, 0 = run once), `FETCH_OPENROUTER`
 (1 = live fetch, 0 = baked fixtures), `EXTRA_MODEL_IDS`
-(comma-separated ids fetched individually), judge keys
-(`BASETEN_API_KEY`, `MODAL_KEY_ID`/`MODAL_KEY_SECRET`,
+(comma-separated ids fetched individually), `RANKINGS_API_KEY` (menu
+popularity pins via the Data API; unset = published without pins),
+judge keys (`BASETEN_API_KEY`, `MODAL_KEY_ID`/`MODAL_KEY_SECRET`,
 `MODAL_JUDGE_URL`; unset = recorded-fixture judging), `CATALOG_UI`
-(`1` lets the catalog-ui browser start). Exact defaults live in
+(`1` lets the catalog-ui browser start). Gateway menu lists:
+`MODAL_MODELS` / `BASETEN_MODELS` (comma-separated, 1–3 ids each,
+advertised only when the provider base is configured). Popularity
+data: OpenRouter Data API (CC-BY). Exact defaults live in
 [`.env.example`](../.env.example), which stays canonical.
 
 ## OpenRouter-native clients (Iter 25)
