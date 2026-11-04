@@ -1311,7 +1311,6 @@ re-asking. Delete nothing; supersede by adding a row.
 | Q08 | S01 | custom: BYOK-only classifier key (caller Authorization; optional `x-pennyrouter-classifier-key` header override); CLASSIFIER_API_KEY removed, no stored key ever | 2026-11-04 | |
 | Q12 | B18 | A (reject over-age rankings) | 2026-11-04 | |
 | Q01 | B16 | A (strict 400 model_not_provided) | 2026-11-04 | |
-| Q01 | B16 | | | |
 | Q02 | B08, P12 | | | |
 | Q03 | C01, S06 | | | |
 | Q04 | I02 | | | |
