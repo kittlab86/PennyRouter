@@ -26,14 +26,16 @@ static sort orders miss.
   filter.
 - Add near-zero latency on top of the backend; never be the bottleneck.
 - Run high volume on minimal resources (~1 CPU, ~1 GB RAM ballpark).
-- Support requests up to 1M tokens.
+- Support requests up to ~1M tokens (bytes/4 estimate, 4 MiB cap).
 - Stay OpenAI-compatible on input so existing clients work unchanged.
 - Build everything from scratch in Rust, optimized for performance.
 
 ## Non-goals (for now)
 
-- No request classifier yet — routing is lookup-based, not content-based.
+- No classifier on non-smart ids — routing is lookup-based, not
+  content-based, except the opt-in smart leg (`openrouter/pair/smart[/max]`,
+  Iter 26), where a decision model picks the tier before lookup dispatch.
 - No local serving-key management — the caller supplies the backend key.
 - No catalog-routed backends beyond OpenRouter yet — Modal/Baseten
   serve via provider-pinned direct routes (Iter 16), not the index.
-- No judge/parallel fan-out features yet — see [future.md](future.md).
+- No realtime-judge/parallel fan-out features yet — see [future.md](future.md).

@@ -29,7 +29,7 @@ UIs, with Docker and Terraform (Hetzner) deploys. See
 - Rust implementation, built from scratch for performance.
 - Docker support for local development.
 - Ballpark target: ~1 CPU, ~1 GB RAM under high volume.
-- Minimal added latency; support requests up to 1M tokens.
+- Minimal added latency; support requests up to ~1M tokens (bytes/4 estimate, 4 MiB cap).
 - OpenAI-compatible input; OpenRouter is the first backend target.
 - The incoming request carries the backend serving key (pure BYOK);
   config keys (catalog judge keys, provider URLs) live in the

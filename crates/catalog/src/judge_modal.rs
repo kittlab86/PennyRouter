@@ -103,8 +103,9 @@ fn judge_env(name: &str) -> Result<String, Error> {
 }
 
 /// Deployment URL (server root) → chat API root: trimmed, `/v1` appended
-/// unless already present.
-fn api_root(deployment_url: &str) -> String {
+/// unless already present. Idempotent, so catalog entries work with or
+/// without the suffix.
+pub(crate) fn api_root(deployment_url: &str) -> String {
     let trimmed = deployment_url.trim_end_matches('/');
     if trimmed.ends_with("/v1") {
         trimmed.to_string()

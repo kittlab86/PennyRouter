@@ -2,7 +2,8 @@
 
 Rule: each iteration ships one small layer that is testable by itself and
 adds value on its own. Detail and acceptance criteria live in
-[docs/roadmap.md](docs/roadmap.md).
+[docs/roadmap.md](docs/roadmap.md). Status source: TODO checkboxes;
+roadmap headers mirror them in the same commit.
 
 - [x] **Iter 0 — Repo skeleton + docs.** Value: reviewable
       structure, vision, and plan before any code. Test: tree + link audit.
@@ -126,12 +127,12 @@ cheap judge model, classifier-based routing.
       boundary; `FETCH_OPENROUTER=1` flips the container off fixtures.
       Test: stub-server fetch tests; live one-shot synced 456 models /
       1483 endpoints with 18 zero-price offerings.
-- [ ] **Iter 19 — `lowest` tag.** Cross-model cheapest-paid pick with
+- [x] **Iter 19 — `lowest` tag.** Cross-model cheapest-paid pick with
       no quality floor (fallback when free turns run out); fail-closed
       rejections, exactly-once. Test: 7 routing unit tests (pick,
       first-wins, passthrough, fail-closed, budget, tie-break, wire
       rewrite).
-- [ ] **Iter 20 — Decode gzipped upstream errors.** Live-found: gzipped
+- [x] **Iter 20 — Decode gzipped upstream errors.** Live-found: gzipped
       4xx bodies were wrapped raw into error messages. Decode (bounded)
       on the error path only; success bytes stay untouched. Test: 2
       passthrough tests (readable wrap, decoded JSON forward without

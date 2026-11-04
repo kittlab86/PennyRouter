@@ -1,7 +1,8 @@
 # Routing
 
-Basic provider routing only — no classifier. (Iter 5; data from Iter 4,
-ranking from Iter 6.)
+Basic provider routing only — no classifier except the opt-in smart leg
+([Smart classifier](#smart-classifier-iter-26)), which picks tiers,
+never dollars. (Iter 5; data from Iter 4, ranking from Iter 6.)
 
 ## Idea
 
@@ -23,17 +24,21 @@ meta/muse-spark-open/privacy/low_cost/speed
   route must be good enough that most callers never pass a tag — the custom
   syntax is the smallest feature, not the point.
 
-Initial tag vocabulary (grows with the index): price / latency / throughput
-orientations, `privacy` (zero data retention), region hints.
+Initial tag vocabulary (grows with the index): price orientations,
+`privacy` (zero data retention); latency / throughput orientations
+and region hints parse but are currently ignored — the index carries
+no live signal for them (see §Status).
 `lowest` (Iter 19) is the cross-model cheapest-paid pick: it rewrites
 to whatever paid offering costs least catalog-wide, with no quality
 floor — the fallback when free turns run out.
 `openrouter/pair/free/fallback/<tier>` (Iter 21) chains them: serves
 free while any free offering is eligible, else exactly one pick from
-the named tier (`low`, `think`, `lowest` — resolved through the
-shared tier dispatch, so future tiers plug in automatically).
-Unknown tier names fail closed; auth/config errors surface, never
-fallback; the fallback leg gets no further retry.
+the named tier (`low`, `think`, `lowest`, `decision` — resolved
+through the shared tier dispatch, so future tiers plug in
+automatically). Unknown tier names fail closed with
+`no_eligible_offering` at request time (parse accepts any non-empty
+target; the dispatch rejects unknown names); auth/config errors
+surface, never fallback; the fallback leg gets no further retry.
 
 ## Why not OpenRouter sorts
 
@@ -78,7 +83,7 @@ session.
   and first recognized orientation wins (`price/lowest` stays
   same-model).
 - Free-fallback chains (Iter 21): `openrouter/pair/free/fallback/<tier>`
-  (`low` | `think` | `lowest`). Free leg first with existing free
+  (`low` | `think` | `lowest` | `decision`). Free leg first with existing free
   semantics; on free exhaustion (`no_eligible_offering`) or upstream
   429/502/503/504 after the single virtual retry, one fallback pick
   that skips the just-failed provider. Session pins under the full
@@ -118,7 +123,12 @@ session.
   `free` shares the legacy free path under its own session namespace;
   `low` picks the cheapest priceable known-class offering across
   models; `think` picks the best quality signals across models. Tiers
-  are disjoint: zero-cost serves `free` only. Throttled providers
+  are disjoint: zero-cost serves `free` only. Per-key daily free caps
+  live upstream, not here: OpenRouter's `GET /api/v1/key` reports each
+  key's `free_model_daily_requests` used/limit/remaining, and an
+  exhausted key surfaces as 429s — which the free leg already turns
+  into retry + fallback. The gateway never pre-checks per-key quota
+  (no request-path key inspection). Throttled providers
   (recent 429s, 60s cool-down, counted in
   `pennyrouter_upstream_throttled_total`) yield to fresh ones when any
   remain. `privacy/` variants enforce `zdr: true` +
@@ -131,7 +141,9 @@ session.
   free semantics, and `decision/free/fallback/<tier>` falls back past
   exhaustion like the free tier. No quality floor and no precision
   class requirement (scoring endpoints report `unknown`
-  quantization); paid-only bare scope keeps tier disjointness. The
+  quantization); paid-only bare scope keeps tier disjointness. (`POST
+  /v1/decisions` fails `privacy/*` closed before routing — see
+  Decisions route below.) The
   tier only sees what the catalog synced: the models list omits
   non-text-output models, so `EXTRA_MODEL_IDS` (comma-separated,
   catalog-sync env) nominates such ids for individual fetching.
@@ -142,6 +154,11 @@ session.
   `{OPENROUTER_BASE_URL}/alpha/decisions`. Unknown model ids pass
   through untouched. Retry, throttle memory, and 429 propagation
   match chat; tier fallback serves the `decision` target only.
+  `privacy/decision[/free]` fail closed (`privacy_unsupported_on_decisions`,
+  400, Q06-B): the decisions API has no verified zero-retention
+  field, so the gateway refuses rather than sending on an unkeepable
+  promise. Privacy on decisions means pinning a model directly —
+  explicit caller choice, documented as such.
 - Pinned-model routes (Iter 28): `openrouter/pair/[privacy/]model/\
   <model-id>` pins to one specific catalog model (the model id may
   contain slashes, e.g. `deepseek/deepseek-v4.1-flash`). The router
@@ -225,7 +242,14 @@ path; fallback ids preview the leg that would serve; smart ids
 preview as `smart_requires_classifier` because their tier comes
 from the live classifier leg, not the local index. The `/ui` page
 renders the ten fixed non-smart virtual combos top-3 plus a custom
-model box on top of this endpoint.
+model box on top of this endpoint. Plain-request view: tools, budget,
+and only/ignore constraints are not applied, so a capped request can
+fail closed where the preview shows a pick.
+Session pins are keyed by a seeded 64-bit non-cryptographic hash of
+the raw key (preview echoes the hash, never the key): with
+high-entropy BYOK keys collisions are impractical, so no KDF slows
+the request path — accepted risk, revisit only if keys become
+low-entropy.
 
 ## Smart classifier (Iter 26)
 
@@ -261,10 +285,11 @@ local lookup with no network on the routing path.
   input → serve the one `CLASSIFIER_FALLBACK_TIER` (`low`|`lowest`,
   default `low`), marked with `x-pennyrouter-classifier-fallback:
   true`. The classifier leg itself never retries.
-- Auth: `CLASSIFIER_API_KEY` wins when set, else the incoming
-  `Authorization` rides along (BYOK preserved), else no auth. A
-  foreign classifier base without `CLASSIFIER_API_KEY` receives the
-  caller's key — set the override for cross-vendor legs.
+- Auth (Q08, BYOK-only): no stored key, ever. The leg uses the
+  incoming `Authorization` header, optionally overridden per-request
+  by `x-pennyrouter-classifier-key`, else no auth. A foreign
+  classifier base therefore receives the caller's key by model-choice
+  consent, like pinned routes.
 - `privacy/smart[/max]` enforces `zdr: true` +
   `data_collection: "deny"` on both legs.
 - `smart` with a `/fallback/` suffix is rejected (`invalid_model`,

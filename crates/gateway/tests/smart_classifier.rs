@@ -19,7 +19,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const API_KEY: &str = "Bearer test-key";
@@ -68,6 +68,7 @@ fn build_db(path: &std::path::Path) {
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let id = catalog.endpoints_for(model).unwrap()[0].id;
@@ -84,6 +85,7 @@ fn build_db(path: &std::path::Path) {
                     processed_at: "t".to_string(),
                     supports_tools: None,
                     supports_decisions: None,
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
@@ -207,7 +209,6 @@ fn classifier_config(base: &str) -> ClassifierConfig {
     ClassifierConfig {
         model: CLASSIFIER_MODEL.to_string(),
         base_url: base.to_string(),
-        api_key: None,
         timeout: Duration::from_millis(2000),
         fallback_tier: "low".to_string(),
         max_tokens: 64,
@@ -252,7 +253,7 @@ async fn setup(
     build_db(&db);
     let clf = spawn_mock(
         Router::new()
-            .route("/chat/completions", post(classifier_handler))
+            .route("/v1/chat/completions", post(classifier_handler))
             .with_state(classifier),
     )
     .await;
@@ -280,6 +281,71 @@ async fn post_chat(gw: SocketAddr, body: serde_json::Value) -> reqwest::Response
 
 fn chat_body(model: &str) -> serde_json::Value {
     serde_json::json!({"model": model, "messages": [{"role": "user", "content": "hello"}]})
+}
+
+async fn setup_with_mock(
+    test: &str,
+    classifier: Arc<ClassifierMock>,
+) -> (SocketAddr, Arc<ClassifierMock>) {
+    let db = scratch_db(test);
+    build_db(&db);
+    let clf = spawn_mock(
+        Router::new()
+            .route("/v1/chat/completions", post(classifier_handler))
+            .with_state(classifier.clone()),
+    )
+    .await;
+    let mock = spawn_mock(mock_upstream(
+        Arc::new(Mutex::new(Upstream::default())),
+        vec![],
+    ))
+    .await;
+    let (gw, _) = spawn_gateway(mock, &db, Some(classifier_config(&format!("http://{clf}")))).await;
+    (gw, classifier)
+}
+
+/// Q08/S01: the classifier leg authenticates with the caller's key —
+/// never a stored operator key. Even with `CLASSIFIER_API_KEY` set in
+/// the environment, the mock must see the caller key, not the env key.
+#[tokio::test]
+async fn classifier_leg_forwards_caller_key() {
+    std::env::set_var("CLASSIFIER_API_KEY", "op-key");
+    let mock = verdict_mock(r#"{"tier":"low","confidence":0.9}"#);
+    let (gw, mock) = setup_with_mock("clf-caller-key", mock).await;
+    let res = client()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .header("authorization", "Bearer caller-1")
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&chat_body("openrouter/pair/smart")).unwrap())
+        .send()
+        .await
+        .unwrap();
+    std::env::remove_var("CLASSIFIER_API_KEY");
+    assert_eq!(res.status(), StatusCode::OK);
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].auth.as_deref(), Some("Bearer caller-1"));
+}
+
+/// Q08: the per-request classifier-key header overrides the caller
+/// key for the classifier leg only.
+#[tokio::test]
+async fn classifier_key_header_overrides_caller_key() {
+    let mock = verdict_mock(r#"{"tier":"low","confidence":0.9}"#);
+    let (gw, mock) = setup_with_mock("clf-header-key", mock).await;
+    let res = client()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .header("authorization", "Bearer caller-1")
+        .header("x-pennyrouter-classifier-key", "sk-clf")
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&chat_body("openrouter/pair/smart")).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].auth.as_deref(), Some("Bearer sk-clf"));
 }
 
 #[tokio::test]
@@ -389,7 +455,7 @@ async fn smart_timeout_falls_back() {
     build_db(&db);
     let clf = spawn_mock(
         Router::new()
-            .route("/chat/completions", post(classifier_handler))
+            .route("/v1/chat/completions", post(classifier_handler))
             .with_state(mock),
     )
     .await;
@@ -498,7 +564,7 @@ async fn smart_privacy_marks_both_legs() {
     build_db(&db);
     let clf = spawn_mock(
         Router::new()
-            .route("/chat/completions", post(classifier_handler))
+            .route("/v1/chat/completions", post(classifier_handler))
             .with_state(mock.clone()),
     )
     .await;
@@ -594,7 +660,7 @@ async fn smart_fallback_tier_is_configurable() {
     build_db(&db);
     let clf = spawn_mock(
         Router::new()
-            .route("/chat/completions", post(classifier_handler))
+            .route("/v1/chat/completions", post(classifier_handler))
             .with_state(mock),
     )
     .await;
@@ -611,4 +677,142 @@ async fn smart_fallback_tier_is_configurable() {
     assert_eq!(res.headers()["x-pennyrouter-provider"], "Raw");
     let rendered = metrics.render();
     assert!(rendered.contains("pennyrouter_smart_fallback_total{tier=\"lowest\"} 1"));
+}
+
+#[tokio::test]
+async fn smart_id_on_native_alias_forwards_stripped_path() {
+    // B02 probe: smart via `/api/v1/chat/completions` must reach the
+    // upstream once at `/v1/chat/completions`, not `/api/api/v1/…`.
+    // The mock only serves the stripped shape, so a double prefix 404s.
+    let mock = verdict_mock(r#"{"tier":"low","confidence":0.9}"#);
+    let (gw, seen, _) = setup("smart-native", mock, vec![]).await;
+
+    let res = client()
+        .post(format!("http://{gw}/api/v1/chat/completions"))
+        .header("authorization", API_KEY)
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&chat_body("openrouter/pair/smart")).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["x-pennyrouter-smart-tier"], "low");
+    assert_eq!(res.headers()["x-pennyrouter-provider"], "Cheap");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.hits.get("Cheap"), Some(&1));
+}
+
+#[tokio::test]
+async fn classifier_oversized_stream_fails_invalid_without_waiting_for_timeout() {
+    // C02 probe: a 200 reply dripped past the 64 KiB reply bound must fail
+    // closed as `invalid` as soon as the bound trips (~170ms in), not buffer
+    // the whole stream until the 2s classifier timeout.
+    async fn drip() -> Response {
+        let stream = futures_util::stream::unfold(0usize, |n| async move {
+            if n >= 300 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Some((
+                Ok::<_, std::convert::Infallible>(Bytes::from(vec![b'x'; 4096])),
+                n + 1,
+            ))
+        });
+        (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            axum::body::Body::from_stream(stream),
+        )
+            .into_response()
+    }
+    let db = scratch_db("oversized-classifier");
+    build_db(&db);
+    let clf = spawn_mock(Router::new().route("/v1/chat/completions", post(drip))).await;
+    let seen = Arc::new(Mutex::new(Upstream::default()));
+    let upstream = spawn_mock(mock_upstream(seen, vec![])).await;
+    let (gw, metrics) = spawn_gateway(
+        upstream,
+        &db,
+        Some(classifier_config(&format!("http://{clf}"))),
+    )
+    .await;
+
+    let start = Instant::now();
+    let res = post_chat(gw, chat_body("openrouter/pair/smart")).await;
+    let elapsed = start.elapsed();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["x-pennyrouter-classifier-fallback"], "true");
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "oversized classifier reply should fail fast, took {elapsed:?}"
+    );
+    let rendered = metrics.render();
+    assert!(
+        rendered.contains("pennyrouter_classifier_total{result=\"invalid\",tier=\"none\"} 1"),
+        "expected invalid, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("pennyrouter_classifier_total{result=\"timeout\",tier=\"none\"} 0"),
+        "must not wait out the timeout:\n{rendered}"
+    );
+}
+
+const CLASSIFIER_VARS: [&str; 6] = [
+    "CLASSIFIER_MODEL",
+    "CLASSIFIER_BASE_URL",
+    "CLASSIFIER_TIMEOUT_MS",
+    "CLASSIFIER_FALLBACK_TIER",
+    "CLASSIFIER_MAX_TOKENS",
+    "CLASSIFIER_MAX_INPUT_CHARS",
+];
+
+fn clear_classifier_env() {
+    for var in CLASSIFIER_VARS {
+        std::env::remove_var(var);
+    }
+}
+
+// I10(b): one sequential test (no intra-binary race: nothing else in
+// this binary reads CLASSIFIER_* env).
+#[test]
+fn classifier_config_from_env() {
+    clear_classifier_env();
+    // Unset or empty model disables the smart ids.
+    assert!(ClassifierConfig::from_env("https://openrouter.ai/api").is_none());
+    std::env::set_var("CLASSIFIER_MODEL", "");
+    assert!(ClassifierConfig::from_env("https://openrouter.ai/api").is_none());
+
+    std::env::set_var("CLASSIFIER_MODEL", "clf");
+    let config = ClassifierConfig::from_env("https://openrouter.ai/api").unwrap();
+    assert_eq!(config.model, "clf");
+    // Base defaults to the OpenRouter base; explicit bases trim slashes.
+    assert_eq!(config.base_url, "https://openrouter.ai/api");
+    assert_eq!(config.fallback_tier, "low");
+    assert_eq!(config.timeout, Duration::from_millis(8000));
+    assert_eq!(config.max_tokens, 64);
+    assert_eq!(config.max_input_chars, 32_000);
+
+    std::env::set_var("CLASSIFIER_BASE_URL", "https://foreign.example/v1/");
+    std::env::set_var("CLASSIFIER_FALLBACK_TIER", "lowest");
+    std::env::set_var("CLASSIFIER_TIMEOUT_MS", "100");
+    std::env::set_var("CLASSIFIER_MAX_TOKENS", "8");
+    std::env::set_var("CLASSIFIER_MAX_INPUT_CHARS", "512");
+    // Q08: a stored operator key is dead — setting it changes nothing.
+    std::env::set_var("CLASSIFIER_API_KEY", "op-key");
+    let config = ClassifierConfig::from_env("https://openrouter.ai/api").unwrap();
+    assert_eq!(config.base_url, "https://foreign.example/v1");
+    assert_eq!(config.fallback_tier, "lowest");
+    assert_eq!(config.timeout, Duration::from_millis(100));
+    assert_eq!(config.max_tokens, 8);
+    assert_eq!(config.max_input_chars, 512);
+
+    // Unknown tier degrades to low; unparsable numerics fall back to
+    // defaults.
+    std::env::set_var("CLASSIFIER_FALLBACK_TIER", "bogus");
+    std::env::set_var("CLASSIFIER_TIMEOUT_MS", "bogus");
+    let config = ClassifierConfig::from_env("https://openrouter.ai/api").unwrap();
+    assert_eq!(config.fallback_tier, "low");
+    assert_eq!(config.timeout, Duration::from_millis(8000));
+
+    clear_classifier_env();
 }

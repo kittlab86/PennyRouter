@@ -243,31 +243,37 @@ pub fn run_judging_selected(
     judged_at: &str,
 ) -> Result<JudgeSummary, Error> {
     let identity = judge.identity();
-    let mut judged = 0;
-    let mut matched = 0;
-    for ep in endpoints {
-        let payload: Value = serde_json::from_str(&ep.payload)?;
-        let judgment = judge.judge(&ep.model_id, &ep.provider_name, &payload)?;
-        if judgment.quality_tier.is_some() || judgment.quality_score.is_some() {
-            matched += 1;
+    // One transaction for the whole run (plus its meta): a mid-run
+    // failure rolls every judgment back instead of half-judging. The
+    // pipeline judges a private work DB, so the lock never blocks
+    // gateway readers (they see only published artifacts).
+    catalog.transaction(|| {
+        let mut judged = 0;
+        let mut matched = 0;
+        for ep in endpoints {
+            let payload: Value = serde_json::from_str(&ep.payload)?;
+            let judgment = judge.judge(&ep.model_id, &ep.provider_name, &payload)?;
+            if judgment.quality_tier.is_some() || judgment.quality_score.is_some() {
+                matched += 1;
+            }
+            catalog.update_endpoint_judgment(
+                ep.id,
+                &EndpointJudgment {
+                    quality_tier: judgment.quality_tier,
+                    quality_score: judgment.quality_score,
+                    judged_at: judged_at.to_string(),
+                    judge_model: Some(identity.model.clone()),
+                    judge_prompt: Some(identity.prompt_version.clone()),
+                },
+            )?;
+            judged += 1;
         }
-        catalog.update_endpoint_judgment(
-            ep.id,
-            &EndpointJudgment {
-                quality_tier: judgment.quality_tier,
-                quality_score: judgment.quality_score,
-                judged_at: judged_at.to_string(),
-                judge_model: Some(identity.model.clone()),
-                judge_prompt: Some(identity.prompt_version.clone()),
-            },
-        )?;
-        judged += 1;
-    }
-    catalog.set_meta("judged_at", judged_at)?;
-    catalog.set_meta("judged_count", &judged.to_string())?;
-    catalog.set_meta("judge_model", &identity.model)?;
-    catalog.set_meta("judge_prompt", &identity.prompt_version)?;
-    Ok(JudgeSummary { judged, matched })
+        catalog.set_meta("judged_at", judged_at)?;
+        catalog.set_meta("judged_count", &judged.to_string())?;
+        catalog.set_meta("judge_model", &identity.model)?;
+        catalog.set_meta("judge_prompt", &identity.prompt_version)?;
+        Ok(JudgeSummary { judged, matched })
+    })
 }
 
 #[cfg(test)]

@@ -170,6 +170,23 @@ async fn spawn_mock(seen: Arc<Mutex<Seen>>) -> SocketAddr {
                 }
             }),
         )
+        .route(
+            "/api/v1/embeddings",
+            post({
+                let seen = seen.clone();
+                move |uri: Uri, headers: HeaderMap, body: Bytes| {
+                    let seen = seen.clone();
+                    async move {
+                        record(&seen, "POST", &uri, &headers, Some(&body));
+                        (
+                            StatusCode::OK,
+                            [("content-type", "application/json")],
+                            EMBEDDING_OK.to_vec(),
+                        )
+                    }
+                }
+            }),
+        )
         // Non-native management shape: without the `/api` prefix the
         // gateway historically proxied `base + path`, which lands on
         // the same upstream URL as the native form. The mock records
@@ -446,4 +463,87 @@ async fn management_write_allowed_with_flag() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.hits, 1);
     assert_eq!(seen.path.as_deref(), Some("/api/v1/keys"));
+}
+
+/// Q10-B: encoded, doubled-slash, trailing-slash, and traversal
+/// variants canonicalize to the same deny as the plain form — the
+/// guard is no longer one `%2e` away from a bypass.
+#[tokio::test]
+async fn management_write_bypass_variants_denied() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mock = spawn_mock(seen.clone()).await;
+    let gw = spawn_gateway(pennyrouter_gateway::AppState::new(format!("http://{mock}"))).await;
+
+    for path in [
+        "/api/v1/%6beys",
+        "//api//v1//keys",
+        "/api/v1/keys/",
+        "/v1/%6Beys",
+        "/api/v1/keys/%2e%2e",
+    ] {
+        let res = client()
+            .post(format!("http://{gw}{path}"))
+            .header("authorization", API_KEY)
+            .header("content-type", "application/json")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{path}");
+        let body = res.text().await.unwrap();
+        assert!(body.contains("management_proxy_disabled"), "{path}: {body}");
+    }
+    assert_eq!(seen.lock().unwrap().hits, 0);
+}
+
+/// Q10-B: an unknown write is not a known-safe shape, so it fails
+/// closed instead of proxying on hope.
+#[tokio::test]
+async fn unknown_write_denied_by_default() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mock = spawn_mock(seen.clone()).await;
+    let gw = spawn_gateway(pennyrouter_gateway::AppState::new(format!("http://{mock}"))).await;
+
+    let res = client()
+        .post(format!("http://{gw}/v1/some-new-thing"))
+        .header("authorization", API_KEY)
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    assert_eq!(seen.lock().unwrap().hits, 0);
+}
+
+/// Q10-B: plain OpenAI-compatible inference writes still proxy, in
+/// both the bare and `/api`-prefixed forms.
+#[tokio::test]
+async fn allowlisted_inference_writes_proxy() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mock = spawn_mock(seen.clone()).await;
+    let gw = spawn_gateway(pennyrouter_gateway::AppState::new(format!("http://{mock}"))).await;
+
+    // The mock 404s unknown paths, so proxying is proven by the
+    // recorded upstream hit (not the status): no 403, right path.
+    // Native form keeps its full path against the upstream root
+    // (the mock base has no `/api` suffix to strip), so the mock
+    // records `/api/v1/embeddings` verbatim.
+    for (gateway_path, upstream_path) in [
+        ("/v1/embeddings", "/v1/embeddings"),
+        ("/api/v1/embeddings", "/api/v1/embeddings"),
+    ] {
+        let res = client()
+            .post(format!("http://{gw}{gateway_path}"))
+            .header("authorization", API_KEY)
+            .header("content-type", "application/json")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::FORBIDDEN, "{gateway_path}");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.path.as_deref(), Some(upstream_path), "{gateway_path}");
+    }
+    assert_eq!(seen.lock().unwrap().hits, 2);
 }

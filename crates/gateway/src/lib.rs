@@ -145,6 +145,27 @@ async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
 }
 
+/// Readiness (Q07-A): 200 only once a catalog snapshot has loaded,
+/// 503 while the gateway is standby passthrough. `/health` stays
+/// pure liveness and never depends on the catalog, so container
+/// checks keep working during reload gaps.
+async fn ready(State(state): State<AppState>) -> (StatusCode, Json<Health>) {
+    if state
+        .router
+        .as_ref()
+        .is_some_and(|router| router.is_ready())
+    {
+        (StatusCode::OK, Json(Health { status: "ready" }))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(Health {
+                status: "not_ready",
+            }),
+        )
+    }
+}
+
 /// Concurrency bounds (Iter 9). `max_upstream` caps simultaneous
 /// upstream calls; `max_queued` caps how many requests wait for a slot.
 /// Anything beyond sheds with 503.
@@ -167,17 +188,44 @@ impl Default for ConcurrencyLimits {
 /// `openrouter/pair/smart[/max]`, and on which upstream. `None` means
 /// smart ids fail closed with `classifier_not_configured` — every other
 /// id keeps the pure-local routing contract.
+///
+/// Q08: no stored key, ever. The classifier leg authenticates with the
+/// caller's `Authorization` header (pure BYOK), optionally overridden
+/// per-request by `x-pennyrouter-classifier-key`.
 #[derive(Clone, Debug)]
 pub struct ClassifierConfig {
     pub model: String,
     pub base_url: String,
-    pub api_key: Option<String>,
     pub timeout: Duration,
     /// Tier served when the classifier leg fails: `low` or `lowest`.
     pub fallback_tier: String,
     pub max_tokens: u32,
     /// Classifier input budget in serialized-JSON characters.
     pub max_input_chars: usize,
+}
+
+/// Per-request classifier credential (Q08): the
+/// `x-pennyrouter-classifier-key` header wins when present (raw key,
+/// `Bearer`-wrapped unless already prefixed); otherwise the caller's
+/// `Authorization` header rides along verbatim; otherwise the call
+/// goes out unauthenticated (e.g. a local classifier with no auth).
+/// Nothing is read from env and nothing is stored.
+pub fn classifier_auth(headers: &axum::http::HeaderMap) -> Option<String> {
+    if let Some(key) = headers
+        .get("x-pennyrouter-classifier-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        if key.starts_with("Bearer ") {
+            return Some(key.to_string());
+        }
+        return Some(format!("Bearer {key}"));
+    }
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
 }
 
 /// Defaults for the classifier leg (Iter 26): one short call, small
@@ -219,9 +267,6 @@ impl ClassifierConfig {
         Some(Self {
             model,
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key: std::env::var("CLASSIFIER_API_KEY")
-                .ok()
-                .filter(|key| !key.is_empty()),
             timeout: Duration::from_millis(
                 std::env::var("CLASSIFIER_TIMEOUT_MS")
                     .ok()
@@ -389,6 +434,15 @@ impl AppState {
         // disables the smart ids (fail closed); anything else keeps the
         // pure-local routing contract for every other id.
         let classifier = ClassifierConfig::from_env(&base);
+        warn_insecure_base("OPENROUTER_BASE_URL", &base);
+        if std::env::var("CLASSIFIER_BASE_URL")
+            .ok()
+            .is_some_and(|url| !url.is_empty())
+        {
+            if let Some(config) = &classifier {
+                warn_insecure_base("CLASSIFIER_BASE_URL", &config.base_url);
+            }
+        }
         let mut state = Self::with_limits(base, Timeouts::default(), limits);
         state.classifier = classifier;
         // Provider-pinned upstreams (Iter 16): unset means the
@@ -401,11 +455,13 @@ impl AppState {
         // unset until configured.
         if let Ok(url) = std::env::var("MODAL_BASE_URL") {
             if !url.is_empty() {
+                warn_insecure_base("MODAL_BASE_URL", &url);
                 state = state.with_upstream("modal", &url);
             }
         }
         if let Ok(url) = std::env::var("BASETEN_BASE_URL") {
             if !url.is_empty() {
+                warn_insecure_base("BASETEN_BASE_URL", &url);
                 state = state.with_upstream("baseten", &url);
             }
         } else {
@@ -432,12 +488,41 @@ impl AppState {
 /// `/v1/…` path itself, so a base that already ends in `/v1` would
 /// double it (`/v1/v1/…`) and 404 upstream. Idempotent; other paths
 /// (including `/v10`) pass through untouched.
-fn normalize_pinned_base(base_url: &str) -> String {
+pub(crate) fn normalize_pinned_base(base_url: &str) -> String {
     let mut base = base_url.trim_end_matches('/').to_string();
     while let Some(stripped) = base.strip_suffix("/v1") {
         base = stripped.trim_end_matches('/').to_string();
     }
     base
+}
+
+/// S09: true when a base URL would send bearer keys over cleartext
+/// HTTP to a non-loopback host. `starts_with` checks only — no URL
+/// parser dependency. Callers warn at startup, never reject:
+/// rejection would break local-dev mocks.
+fn insecure_base_url(base_url: &str) -> bool {
+    // Schemes are case-insensitive; only cleartext http can warn.
+    let rest = match base_url.get(..7) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("http://") => &base_url[7..],
+        _ => return false,
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !(host == "localhost"
+        || host.starts_with("localhost:")
+        || host == "127.0.0.1"
+        || host.starts_with("127.0.0.1:")
+        || host == "[::1]"
+        || host.starts_with("[::1]:"))
+}
+
+/// Startup warning for one configured base URL (S09).
+fn warn_insecure_base(env_name: &str, base_url: &str) {
+    if insecure_base_url(base_url) {
+        eprintln!(
+            "gateway: {env_name}={base_url:?} uses cleartext http to a non-loopback host: \
+             bearer keys travel unencrypted. Use https outside local dev."
+        );
+    }
 }
 
 pub fn app() -> Router {
@@ -462,13 +547,28 @@ pub fn spawn_reload_task(
     interval: Duration,
     metrics: Arc<Metrics>,
 ) -> tokio::task::JoinHandle<()> {
+    // Zero disables: return a handle that is already done instead of
+    // constructing `interval(0)`, which panics. `main` also guards,
+    // but embedders and tests must not be able to panic here.
+    if interval.is_zero() {
+        let _ = (&router, &metrics);
+        return tokio::spawn(async {});
+    }
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         // A slow or failed reload never delays the next scheduled one.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            match router.reload() {
+            // Q05: catalog loads are blocking SQLite/file I/O — run
+            // them on the blocking pool so a slow disk never stalls
+            // the 1-CPU async worker. The reload itself still swaps
+            // atomically (see `Router::reload`).
+            let loader = router.clone();
+            match tokio::task::spawn_blocking(move || loader.reload())
+                .await
+                .unwrap_or_else(|e| Err(routing::RouteError(format!("reload task panicked: {e}"))))
+            {
                 Ok(()) => metrics.reload_report(true),
                 Err(e) => {
                     metrics.reload_report(false);
@@ -511,6 +611,7 @@ pub fn app_with_state(state: AppState) -> Router {
     let router = Router::new()
         .route("/", get(landing))
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/metrics", get(metrics_handler))
         .route("/v1/chat/completions", post(routed_completion))
         // Responses bodies carry the same `model` field, so they get
@@ -817,7 +918,9 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         <code>Authorization</code> header to <code>/ui/preview</code>, where the gateway \
         hashes it with the same seeded hash the request path pins with. The raw key is \
         never logged and never stored; previews never create pins. Empty means anonymous \
-        (no session, always the fresh pick).</p>",
+        (no session, always the fresh pick). Plain-request view: tools, budget, and \
+        only/ignore constraints are not applied, so a capped request can fail closed \
+        where the preview shows a pick.</p>",
     );
     page.push_str(
         "<p><label>Session key: \
@@ -1043,8 +1146,9 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-/// Curated virtual-model menu (Iter 13): exactly the six ids, OpenAI
-/// list shape, served locally instead of proxied.
+/// Curated virtual-model menu (Iter 13, fourteen ids today): the
+/// `VIRTUAL_MODELS` list in OpenAI list shape, served locally
+/// instead of proxied.
 async fn models_list() -> Response {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1150,21 +1254,60 @@ async fn routed_decisions(
         Err(response) => return *response,
     };
 
-    // Virtual requests keep a copy for one retry: the permit is
-    // per-attempt, the body is reusable.
-    let retry_body = is_virtual_request(&buffered).then(|| buffered.clone());
-    let (forwarded_body, decision) = match &state.router {
+    // I04: parse once — virtual + fallback facts derive from this
+    // one parse instead of re-parsing the body per question.
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(&buffered).ok();
+    let model: Option<String> = parsed.as_ref().and_then(|json| {
+        json.get("model")
+            .and_then(|model| model.as_str())
+            .map(str::to_string)
+    });
+    let virtual_model = model
+        .as_ref()
+        .and_then(|model| routing::parse_virtual(model));
+    let is_virtual = virtual_model.is_some();
+    // Q06-B: privacy virtual ids fail closed on the decisions route.
+    // The decisions API has no verified zero-retention field, so
+    // serving would send the payload on a promise the gateway cannot
+    // keep. Pin a model directly (`modal/…`, `baseten/…`, or
+    // `openrouter/pair/model/…`) when the caller accepts the
+    // upstream's default policy — explicit choice, not a silent one.
+    if virtual_model.as_ref().is_some_and(|v| v.privacy) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "privacy_unsupported_on_decisions",
+            "privacy virtual ids are not served on the decisions route: \
+             no verified zero-retention field exists for the decisions API; \
+             pin a model directly if you accept the upstream default policy"
+                .to_string(),
+        );
+    }
+    let fallback_request: Option<(String, String)> = match (&model, &virtual_model) {
+        (Some(model), Some(virtual_model)) => virtual_model
+            .fallback
+            .clone()
+            .map(|target| (model.clone(), target)),
+        _ => None,
+    };
+    // Routed virtual requests keep the original body for one retry
+    // (Iter 13): moved, never cloned (the routed arm drops `buffered`
+    // anyway).
+    let (forwarded_body, decision, retry_body) = match &state.router {
         Some(router) => match router.route_decision_request(&headers, &buffered) {
-            Ok(Some((rewritten, decision))) => (rewritten, Some(decision)),
-            Ok(None) => (buffered, None),
+            Ok(Some((rewritten, decision))) => {
+                let retry_body = is_virtual.then_some(buffered);
+                (rewritten, Some(decision), retry_body)
+            }
+            Ok(None) => (buffered, None, None),
             Err(rejection) => {
-                if is_virtual_request(&buffered) {
+                if is_virtual {
                     return rejection_response(&rejection);
                 }
-                (buffered, None)
+                (buffered, None, None)
             }
         },
-        None => (buffered, None),
+        None => (buffered, None, None),
     };
     // The decisions API lives outside `/v1`: the alpha path appends
     // to the API root (a custom base with a trailing `/v1` is
@@ -1185,30 +1328,23 @@ async fn routed_decisions(
     if let Some(decision) = &decision {
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             if let Some(router) = &state.router {
-                let headers = response.headers();
-                let retry_after = headers
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok());
-                let reset_ms = headers
-                    .get("x-ratelimit-reset")
-                    .and_then(|v| v.to_str().ok());
-                router.note_throttled(
-                    &decision.model_id,
-                    &decision.provider,
-                    routing::throttle_until(retry_after, reset_ms),
-                );
+                note_throttled_pair(router, &decision.model_id, &decision.provider, &response);
             }
             state.metrics.throttled();
         }
     }
-    let fallback_request: Option<(String, String)> = retry_body.as_ref().and_then(|rb| {
-        let model_field = serde_json::from_slice::<serde_json::Value>(rb)
-            .ok()
-            .and_then(|json| json.get("model")?.as_str().map(str::to_string))?;
-        let target = routing::parse_virtual(&model_field)?.fallback?;
-        Some((model_field, target))
-    });
-    let fallback_body: Option<Vec<u8>> = retry_body.clone();
+    // Owned copy for the post-retry leg: the retry block moves
+    // `retry_body`. Cloned only when a fallback leg can actually run
+    // (retryable response + configured target) — never eagerly.
+    let fallback_body: Option<Vec<u8>> =
+        if is_retryable(response.status()) && fallback_request.is_some() {
+            retry_body.clone()
+        } else {
+            None
+        };
+    // Tracks whether the retry leg below ran: a retryable retry
+    // response falls through to the fallback leg instead of returning.
+    let mut retried = false;
     if is_retryable(response.status()) {
         if let (Some(router), Some(retry_body), Some(decision)) =
             (&state.router, retry_body, &decision)
@@ -1238,7 +1374,19 @@ async fn routed_decisions(
                         .headers_mut()
                         .insert(routing::PROVIDER_HEADER, provider);
                 }
-                return response;
+                if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                    note_throttled_pair(
+                        router,
+                        &retry_decision.model_id,
+                        &retry_decision.provider,
+                        &response,
+                    );
+                    state.metrics.throttled();
+                }
+                retried = true;
+                if !(is_retryable(response.status()) && fallback_request.is_some()) {
+                    return response;
+                }
             }
         }
     }
@@ -1271,18 +1419,11 @@ async fn routed_decisions(
                     )
                     .await;
                     if response.status() == StatusCode::TOO_MANY_REQUESTS {
-                        let fb_headers = response.headers();
-                        router.note_throttled(
+                        note_throttled_pair(
+                            router,
                             &fb_decision.model_id,
                             &fb_decision.provider,
-                            routing::throttle_until(
-                                fb_headers
-                                    .get(reqwest::header::RETRY_AFTER)
-                                    .and_then(|v| v.to_str().ok()),
-                                fb_headers
-                                    .get("x-ratelimit-reset")
-                                    .and_then(|v| v.to_str().ok()),
-                            ),
+                            &response,
                         );
                         state.metrics.throttled();
                     }
@@ -1294,6 +1435,12 @@ async fn routed_decisions(
                     return response;
                 }
                 Ok(None) => {}
+            }
+            // No fallback route after a retry: the retry response (and
+            // its provider header) stands — falling through would stamp
+            // the first leg's provider onto another leg's response.
+            if retried {
+                return response;
             }
         }
     }
@@ -1335,21 +1482,53 @@ async fn routed_completion(
         Err(response) => return *response,
     };
 
+    // I04: parse once — every model fact below (pinned, smart,
+    // virtual, fallback target) derives from this one parse instead
+    // of re-parsing the body per question.
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(&buffered).ok();
+    let model: Option<String> = parsed.as_ref().and_then(|json| {
+        json.get("model")
+            .and_then(|model| model.as_str())
+            .map(str::to_string)
+    });
+    let virtual_model = model
+        .as_ref()
+        .and_then(|model| routing::parse_virtual(model));
+    let is_virtual = virtual_model.is_some();
+    // Free-fallback chains (Iter 21) resolve here: (original model id,
+    // fallback tier) for the post-retry leg below.
+    let fallback_request: Option<(String, String)> = match (&model, &virtual_model) {
+        (Some(model), Some(virtual_model)) => virtual_model
+            .fallback
+            .clone()
+            .map(|target| (model.clone(), target)),
+        _ => None,
+    };
     // Provider-pinned direct routes (Iter 16): `modal/<model>` and
     // `baseten/<model>` bypass the catalog and address that
     // provider's upstream, with or without a router. Pure BYOK: the
     // caller's Authorization header is forwarded unchanged.
-    if let Some(model) = raw_model(&buffered) {
-        if let Some((provider, _)) = routing::split_pinned(&model) {
-            return forward_pinned(&state, permit, &headers, uri, buffered, &model, provider).await;
+    if let Some(model) = &model {
+        // B16/Q01-A: a pinned prefix with no model fails closed —
+        // never proxied untouched to the default upstream. Checked
+        // before `split_pinned` so a whitespace remainder can't slip
+        // through as a model id either.
+        if routing::is_empty_pinned(model) {
+            return rejection_response(&routing::RouteRejection {
+                code: "model_not_provided",
+                message: format!("{model:?} names a pinned provider but no model"),
+            });
+        }
+        if let Some((provider, _)) = routing::split_pinned(model) {
+            return forward_pinned(&state, permit, &headers, uri, buffered, model, provider).await;
         }
     }
     // Smart classifier ids (Iter 26): the `/fallback/` suffix never
     // composes with smart — fail closed instead of leaking a
     // gateway-owned id upstream. Other smart ids run the classifier
     // leg first, then the normal tier dispatch with no session pin.
-    if let Some(model) = raw_model(&buffered) {
-        if routing::is_smart_fallback(&model) {
+    if let Some(model) = &model {
+        if routing::is_smart_fallback(model) {
             return rejection_response(&routing::RouteRejection {
                 code: "invalid_model",
                 message: format!(
@@ -1357,34 +1536,38 @@ async fn routed_completion(
                 ),
             });
         }
-        if let Some(smart) = routing::parse_smart(&model) {
+        if let Some(smart) = routing::parse_smart(model) {
+            // Same native-alias strip as the normal path below: smart
+            // ids on `/api/v1/…` forward as `/v1/…`, never doubled.
             let path = uri
                 .path_and_query()
-                .map(|path_and_query| path_and_query.as_str().to_string())
+                .map(|path_and_query| strip_api_prefix(path_and_query.as_str()))
                 .unwrap_or_else(|| "/v1/chat/completions".to_string());
-            return smart_completion(&state, &headers, permit, &path, buffered, &model, smart)
-                .await;
+            return smart_completion(&state, &headers, permit, &path, buffered, model, smart).await;
         }
     }
-    // Virtual requests keep a copy for one retry (Iter 13): the permit
-    // is per-attempt, the body is reusable.
-    let retry_body = is_virtual_request(&buffered).then(|| buffered.clone());
     // Routing rewrites recognized requests; anything unrecognized (or no
     // router configured) forwards untouched. Virtual-model rejections
     // fail closed (Iter 14): a gateway-owned id must never leak upstream,
-    // where it would 404 opaquely.
-    let (forwarded_body, decision) = match &state.router {
+    // where it would 404 opaquely. Routed virtual requests keep the
+    // original body for one retry (Iter 13): the permit is
+    // per-attempt, the body is reusable — moved, never cloned (the
+    // routed arm drops `buffered` anyway).
+    let (forwarded_body, decision, retry_body) = match &state.router {
         Some(router) => match router.route_request_or_reject(&headers, &buffered) {
-            Ok(Some((rewritten, decision))) => (rewritten, Some(decision)),
-            Ok(None) => (buffered, None),
+            Ok(Some((rewritten, decision))) => {
+                let retry_body = is_virtual.then_some(buffered);
+                (rewritten, Some(decision), retry_body)
+            }
+            Ok(None) => (buffered, None, None),
             Err(rejection) => {
-                if is_virtual_request(&buffered) {
+                if is_virtual {
                     return rejection_response(&rejection);
                 }
-                (buffered, None)
+                (buffered, None, None)
             }
         },
-        None => (buffered, None),
+        None => (buffered, None, None),
     };
     // OpenRouter-native aliases (Iter 25) arrive as `/api/v1/…`; the
     // upstream keeps the `/v1/…` shape so the `/api` base never doubles.
@@ -1408,18 +1591,7 @@ async fn routed_completion(
             // 429 history steers later virtual picks elsewhere, for as
             // long as the upstream headers say (Iter 21).
             if let Some(router) = &state.router {
-                let headers = response.headers();
-                let retry_after = headers
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok());
-                let reset_ms = headers
-                    .get("x-ratelimit-reset")
-                    .and_then(|v| v.to_str().ok());
-                router.note_throttled(
-                    &decision.model_id,
-                    &decision.provider,
-                    routing::throttle_until(retry_after, reset_ms),
-                );
+                note_throttled_pair(router, &decision.model_id, &decision.provider, &response);
             }
             state.metrics.throttled();
         }
@@ -1427,22 +1599,21 @@ async fn routed_completion(
     // Availability (Iter 13): one retry on a different provider for
     // virtual requests when the first attempt is retryable. Non-virtual
     // requests keep exactly-once semantics.
-    // `retry_body` exists only for virtual requests (see above), so
-    // reaching here already implies virtual + retryable.
+    // `retry_body` exists only for routed virtual requests (see
+    // above), so reaching the retry block already implies virtual.
     //
-    // Free-fallback chains (Iter 21) resolve here too, before the
-    // retry block moves `retry_body`: (original model id, fallback
-    // tier) for the post-retry leg below.
-    let fallback_request: Option<(String, String)> = retry_body.as_ref().and_then(|rb| {
-        let model_field = serde_json::from_slice::<serde_json::Value>(rb)
-            .ok()
-            .and_then(|json| json.get("model")?.as_str().map(str::to_string))?;
-        let target = routing::parse_virtual(&model_field)?.fallback?;
-        Some((model_field, target))
-    });
     // Owned copy for the post-retry leg: the retry block moves
-    // `retry_body`. `None` for non-virtual requests (free).
-    let fallback_body: Option<Vec<u8>> = retry_body.clone();
+    // `retry_body`. Cloned only when a fallback leg can actually run
+    // (retryable response + configured target) — never eagerly.
+    let fallback_body: Option<Vec<u8>> =
+        if is_retryable(response.status()) && fallback_request.is_some() {
+            retry_body.clone()
+        } else {
+            None
+        };
+    // Tracks whether the retry leg below ran: a retryable retry
+    // response falls through to the fallback leg instead of returning.
+    let mut retried = false;
     if is_retryable(response.status()) {
         if let (Some(router), Some(retry_body), Some(decision)) =
             (&state.router, retry_body, &decision)
@@ -1475,7 +1646,19 @@ async fn routed_completion(
                         .headers_mut()
                         .insert(routing::PROVIDER_HEADER, provider);
                 }
-                return response;
+                if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                    note_throttled_pair(
+                        router,
+                        &retry_decision.model_id,
+                        &retry_decision.provider,
+                        &response,
+                    );
+                    state.metrics.throttled();
+                }
+                retried = true;
+                if !(is_retryable(response.status()) && fallback_request.is_some()) {
+                    return response;
+                }
             }
         }
     }
@@ -1514,18 +1697,11 @@ async fn routed_completion(
                 )
                 .await;
                 if response.status() == StatusCode::TOO_MANY_REQUESTS {
-                    let fb_headers = response.headers();
-                    router.note_throttled(
+                    note_throttled_pair(
+                        router,
                         &fb_decision.model_id,
                         &fb_decision.provider,
-                        routing::throttle_until(
-                            fb_headers
-                                .get(reqwest::header::RETRY_AFTER)
-                                .and_then(|v| v.to_str().ok()),
-                            fb_headers
-                                .get("x-ratelimit-reset")
-                                .and_then(|v| v.to_str().ok()),
-                        ),
+                        &response,
                     );
                     state.metrics.throttled();
                 }
@@ -1534,6 +1710,12 @@ async fn routed_completion(
                         .headers_mut()
                         .insert(routing::PROVIDER_HEADER, provider);
                 }
+                return response;
+            }
+            // No fallback route after a retry: the retry response (and
+            // its provider header) stands — falling through would stamp
+            // the first leg's provider onto another leg's response.
+            if retried {
                 return response;
             }
         }
@@ -1631,23 +1813,12 @@ async fn call_classifier(
         config.max_tokens,
         smart.privacy,
     );
-    // Auth for this leg only: the operator key wins when set,
-    // otherwise the caller's key rides along (BYOK preserved). With
-    // neither, the call goes out unauthenticated (e.g. a local
-    // classifier with no auth). Operators take note: without
-    // `CLASSIFIER_API_KEY`, a foreign `CLASSIFIER_BASE_URL` receives
-    // the caller's key — set the override for cross-vendor legs.
-    let auth = config
-        .api_key
-        .clone()
-        .map(|key| format!("Bearer {key}"))
-        .or_else(|| {
-            headers
-                .get(axum::http::header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_string)
-        });
-    let url = format!("{}/chat/completions", config.base_url);
+    // Auth for this leg only (Q08, BYOK-only): the per-request
+    // classifier key, else the caller's key, else unauthenticated.
+    // A foreign `CLASSIFIER_BASE_URL` therefore receives the caller's
+    // key by model-choice consent, like pinned routes.
+    let auth = classifier_auth(headers);
+    let url = classifier::chat_url(&config.base_url);
     let send = {
         let mut send = state.client.post(&url).json(&request);
         if let Some(auth) = auth {
@@ -1658,7 +1829,7 @@ async fn call_classifier(
     let (status, bytes) = match tokio::time::timeout(config.timeout, async {
         let response = send.send().await.map_err(|_| "transport")?;
         let status = response.status();
-        let bytes = response.bytes().await.map_err(|_| "transport")?;
+        let bytes = collect_capped_body(response, MAX_CLASSIFIER_BYTES).await?;
         Ok::<_, &'static str>((status, bytes))
     })
     .await
@@ -1670,6 +1841,13 @@ async fn call_classifier(
                     "classifier timed out after {}ms",
                     config.timeout.as_millis()
                 ),
+                start,
+            );
+        }
+        Ok(Err("too_large")) => {
+            return fail(
+                ClassifierResult::Invalid,
+                "classifier reply exceeds the size bound".to_string(),
                 start,
             );
         }
@@ -1685,14 +1863,9 @@ async fn call_classifier(
     let code = status.as_u16();
     match code {
         401 | 403 => {
-            let whose = if config.api_key.is_some() {
-                "the configured CLASSIFIER_API_KEY"
-            } else {
-                "the request credentials"
-            };
             return fail(
                 ClassifierResult::AuthError,
-                format!("classifier upstream rejected {whose} (HTTP {code})"),
+                format!("classifier upstream rejected the request credentials (HTTP {code})"),
                 start,
             );
         }
@@ -1712,13 +1885,8 @@ async fn call_classifier(
             );
         }
     }
-    if bytes.len() > MAX_CLASSIFIER_BYTES {
-        return fail(
-            ClassifierResult::Invalid,
-            "classifier reply exceeds the size bound".to_string(),
-            start,
-        );
-    }
+    // `bytes` is already capped by the collector above; anything past
+    // the bound failed as `Invalid` before the status check.
     let content = serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
         .and_then(|outer| {
@@ -2048,16 +2216,6 @@ fn with_classifier_header(mut response: Response, classifier: &str) -> Response 
     response
 }
 
-/// True for virtual-model chat bodies (Iter 13), from the raw `model`
-/// field — routing may already have rewritten it by the time we ask.
-fn is_virtual_request(buffered: &[u8]) -> bool {
-    serde_json::from_slice::<serde_json::Value>(buffered)
-        .ok()
-        .and_then(|json| json.get("model")?.as_str().map(str::to_string))
-        .and_then(|model| routing::parse_virtual(&model))
-        .is_some()
-}
-
 /// Retryable upstream outcomes (Iter 13): rate limits, bad gateways,
 /// and timeouts. Other statuses (including 500s, which may be
 /// deterministic) stand as-is.
@@ -2069,6 +2227,31 @@ fn is_retryable(status: StatusCode) -> bool {
             | StatusCode::SERVICE_UNAVAILABLE
             | StatusCode::GATEWAY_TIMEOUT
     )
+}
+
+/// Record a 429 cool-down for the serving (model, provider) pair from
+/// the upstream's own headers (Iter 21). Shared by the first, retry, and
+/// fallback legs of both chat and decisions paths; callers count the
+/// metric themselves so no-router passthrough still counts.
+fn note_throttled_pair(
+    router: &routing::Router,
+    model_id: &str,
+    provider: &str,
+    response: &Response,
+) {
+    let headers = response.headers();
+    router.note_throttled(
+        model_id,
+        provider,
+        routing::throttle_until(
+            headers
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            headers
+                .get("x-ratelimit-reset")
+                .and_then(|v| v.to_str().ok()),
+        ),
+    );
 }
 
 /// Drop-in fallback (Iter 8): any standard endpoint without a custom
@@ -2094,7 +2277,7 @@ async fn fallback_proxy(State(state): State<AppState>, request: Request) -> Resp
             "path": redact_query(&path),
         })
     ));
-    if !state.allow_management_proxy && is_blocked_management_write(&parts.method, &path) {
+    if !state.allow_management_proxy && !is_proxy_allowed(&parts.method, &path) {
         return management_forbidden();
     }
     let permit = match acquire_upstream_slot(&state).await {
@@ -2180,39 +2363,87 @@ fn upstream_root(base: &str) -> String {
     base.strip_suffix("/api").unwrap_or(base).to_string()
 }
 
-/// Segment-boundary prefix: `/api/v1/keys` matches itself and
-/// `/api/v1/keys/…`, never `/api/v1/keysaw`.
-fn segment_prefixed(path: &str, prefix: &str) -> bool {
-    path == prefix || path.starts_with(&format!("{prefix}/"))
+/// Hex digit value for percent-decoding paths (Q10-B). Non-hex
+/// after `%` is left literal — it can never match the allowlist, so
+/// malformed encodings fail closed.
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
-/// True for management writes (Iter 25): key creation/rotation,
-/// credit purchases, and workspace budget changes move money or trust,
-/// so they proxy only with `ALLOW_MANAGEMENT_PROXY=1`. Reads always
-/// pass through.
-fn is_blocked_management_write(method: &Method, path_and_query: &str) -> bool {
+/// Canonicalize a request path once (Q10-B): percent-decode, collapse
+/// repeated `/`, drop a trailing `/`. `..` segments stay literal —
+/// resolving them is unnecessary because anything outside the
+/// allowlist below is denied either way.
+fn canonical_path(path_and_query: &str) -> String {
+    let raw = request_path(path_and_query);
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                decoded.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    let decoded = String::from_utf8_lossy(&decoded);
+    let mut out = String::with_capacity(decoded.len());
+    for part in decoded.split('/').filter(|part| !part.is_empty()) {
+        out.push('/');
+        out.push_str(part);
+    }
+    if out.is_empty() {
+        out.push('/');
+    }
+    out
+}
+
+/// Plain OpenAI-compatible inference writes (Q10-B). These move no
+/// money or trust, so the fallback proxy serves them without
+/// `ALLOW_MANAGEMENT_PROXY=1`. Compared in bare form: the leading
+/// `/api` (native SDK paths) is stripped before matching, so both
+/// spellings converge — anything else fails closed.
+fn is_allowlisted_write(path: &str) -> bool {
+    matches!(
+        path,
+        "/v1/embeddings"
+            | "/v1/completions"
+            | "/v1/images/generations"
+            | "/v1/audio/speech"
+            | "/v1/audio/transcriptions"
+            | "/v1/audio/translations"
+            | "/v1/moderations"
+    )
+}
+
+/// True when the fallback proxy may serve the request (Q10-B).
+/// Reads always pass through; writes must be a known-safe inference
+/// shape (canonicalized first, so `%2e`, `//`, trailing-`/` variants
+/// match exactly like the plain form). Unknown writes — key
+/// rotation, credit purchases, budget changes, and anything invented
+/// later — proxy only with `ALLOW_MANAGEMENT_PROXY=1`.
+fn is_proxy_allowed(method: &Method, path_and_query: &str) -> bool {
     if *method == Method::GET || *method == Method::HEAD || *method == Method::OPTIONS {
+        return true;
+    }
+    if *method != Method::POST {
         return false;
     }
-    let path = request_path(path_and_query).trim_end_matches('/');
-    // Compare in native form: without the `/api` prefix the fallback
-    // composes `base + path`, which lands on the same upstream URL as
-    // the native form (`root + /api` + path), so `/v1/keys` must match
-    // exactly like `/api/v1/keys` — otherwise the guard is one prefix
-    // away from a bypass.
-    let native;
-    let path = if is_openrouter_native_path(path) {
-        path
-    } else {
-        native = format!("/api{path}");
-        &native
-    };
-    segment_prefixed(path, "/api/v1/keys")
-        || segment_prefixed(path, "/api/v1/auth/key")
-        || segment_prefixed(path, "/api/v1/auth/keys")
-        || segment_prefixed(path, "/api/v1/credits/coinbase")
-        || (path.starts_with("/api/v1/workspaces/")
-            && path.split('/').any(|segment| segment == "budgets"))
+    let canonical = canonical_path(path_and_query);
+    let bare = canonical
+        .strip_prefix("/api")
+        .filter(|rest| rest.starts_with('/'))
+        .unwrap_or(&canonical);
+    is_allowlisted_write(bare)
 }
 
 fn management_forbidden() -> Response {
@@ -2302,13 +2533,22 @@ async fn acquire_upstream_slot(state: &AppState) -> Option<UpstreamPermit> {
         });
     }
     let queued = state.queue_slots.clone().try_acquire_owned().ok()?;
-    match state.upstream_slots.clone().acquire_owned().await {
-        Ok(slot) => Some(UpstreamPermit {
+    // Q04-A: queued requests wait at most the first-chunk budget
+    // (30s default), then shed via the existing load-shed path —
+    // never indefinitely. Retry/fallback legs re-enter here, so they
+    // share the same deadline instead of stacking waits.
+    match tokio::time::timeout(
+        state.timeouts.first_chunk,
+        state.upstream_slots.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(slot)) => Some(UpstreamPermit {
             _slot: slot,
             _queued: Some(queued),
         }),
-        // Unreachable: the semaphore is never closed while state lives.
-        Err(_) => None,
+        // Timeout, or the semaphore closed (never while state lives).
+        _ => None,
     }
 }
 
@@ -2377,16 +2617,6 @@ fn is_hop_by_hop(name: &axum::http::HeaderName, nominated: &[String]) -> bool {
 /// then map the response (streams chunk-by-chunk, buffered bodies
 /// byte-for-byte, errors wrapped OpenAI-style). The caller holds an
 /// admission permit for the whole call (Iter 11, F02).
-/// Raw `model` field of a buffered body, if it parses as JSON with a
-/// string model (Iter 16: pinned dispatch needs it before routing).
-fn raw_model(buffered: &[u8]) -> Option<String> {
-    serde_json::from_slice::<serde_json::Value>(buffered)
-        .ok()?
-        .get("model")?
-        .as_str()
-        .map(str::to_string)
-}
-
 /// Unconfigured pinned provider (Iter 16): explicit 400, never a
 /// leak to the default upstream (which would 404 opaquely) and never
 /// a guess at the provider's URL.
@@ -2452,7 +2682,7 @@ async fn forward_pinned(
 async fn forward_upstream(
     state: &AppState,
     base_url: &str,
-    _permit: UpstreamPermit,
+    permit: UpstreamPermit,
     method: &Method,
     path: &str,
     headers: &HeaderMap,
@@ -2508,7 +2738,13 @@ async fn forward_upstream(
         .and_then(|value| value.to_str().ok())
         .is_some_and(|content_type| content_type.contains("text/event-stream"));
     if is_stream {
-        return stream_response(status, upstream, state.timeouts.idle, state.metrics.clone());
+        return stream_response(
+            status,
+            upstream,
+            state.timeouts.idle,
+            state.metrics.clone(),
+            permit,
+        );
     }
     let headers = forwarded_response_headers(upstream.headers());
     let bytes = match read_capped_upstream(upstream, state.timeouts.total, &state.metrics).await {
@@ -2522,6 +2758,30 @@ async fn forward_upstream(
     response
         .body(Body::from(bytes))
         .unwrap_or_else(|_| bad_gateway())
+}
+
+/// Collect a response body chunk by chunk up to `bound` bytes,
+/// stopping at the first chunk that overflows instead of buffering
+/// the whole body first. Errors are plain tags so callers map them
+/// to their own failure shape.
+async fn collect_capped_body(
+    response: reqwest::Response,
+    bound: usize,
+) -> Result<Bytes, &'static str> {
+    let mut res = response;
+    let mut buffered = Vec::new();
+    loop {
+        match res.chunk().await {
+            Err(_) => return Err("transport"),
+            Ok(None) => return Ok(Bytes::from(buffered)),
+            Ok(Some(data)) => {
+                if buffered.len() + data.len() > bound {
+                    return Err("too_large");
+                }
+                buffered.extend_from_slice(&data);
+            }
+        }
+    }
 }
 
 /// Collect a buffered upstream body up to the byte bound (Iter 11,
@@ -2580,25 +2840,28 @@ const SSE_INTERRUPTED_EVENT: &[u8] = b"event: error\ndata: {\"error\":{\"message
 /// emits one terminal error event first, so truncation never looks like
 /// success. The in-flight slot is held for the whole body lifetime
 /// (Iter 11, A04) — the middleware counts headers, the stream counts
-/// completion.
+/// completion. The upstream concurrency permit rides the same state:
+/// the slot stays held until the body ends or errors (C01), so
+/// `UPSTREAM_MAX_CONCURRENT` bounds live streams, not just headers.
 fn stream_response(
     status: StatusCode,
     upstream: reqwest::Response,
     idle: Duration,
     metrics: Arc<Metrics>,
+    permit: UpstreamPermit,
 ) -> Response {
     let preserved = forwarded_response_headers(upstream.headers());
     let guard = metrics.in_flight_owned();
     let stream = futures_util::stream::unfold(
-        (upstream, metrics, guard, false),
-        move |(mut res, metrics, guard, failed)| async move {
+        (upstream, metrics, guard, false, permit),
+        move |(mut res, metrics, guard, failed, permit)| async move {
             if failed {
                 return None;
             }
             match tokio::time::timeout(idle, res.chunk()).await {
                 Ok(Ok(Some(bytes))) => Some((
                     Ok::<Bytes, reqwest::Error>(bytes),
-                    (res, metrics, guard, false),
+                    (res, metrics, guard, false, permit),
                 )),
                 Ok(Ok(None)) => None,
                 Err(_) => {
@@ -2606,7 +2869,7 @@ fn stream_response(
                     eprintln!("gateway: upstream stream stalled, ending with error event");
                     Some((
                         Ok::<Bytes, reqwest::Error>(Bytes::from_static(SSE_INTERRUPTED_EVENT)),
-                        (res, metrics, guard, true),
+                        (res, metrics, guard, true, permit),
                     ))
                 }
                 Ok(Err(_)) => {
@@ -2614,7 +2877,7 @@ fn stream_response(
                     eprintln!("gateway: upstream stream broke, ending with error event");
                     Some((
                         Ok::<Bytes, reqwest::Error>(Bytes::from_static(SSE_INTERRUPTED_EVENT)),
-                        (res, metrics, guard, true),
+                        (res, metrics, guard, true, permit),
                     ))
                 }
             }
@@ -2766,6 +3029,14 @@ fn rejection_response(rejection: &routing::RouteRejection) -> Response {
             rejection.code,
             rejection.message.clone(),
         ),
+        // Long-context hardcap is caller-fixable like a budget
+        // violation: shorten the input or pin a model (Q13-C).
+        "context_exceeded" => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            rejection.code,
+            rejection.message.clone(),
+        ),
         // Tool-starvation is caller-fixable (disable tools or pick a
         // tool-capable route), like a budget violation (Iter 22).
         "tools_unsupported" => error_response(
@@ -2780,17 +3051,19 @@ fn rejection_response(rejection: &routing::RouteRejection) -> Response {
             rejection.code,
             rejection.message.clone(),
         ),
-        // Unsupported id shapes (e.g. smart with a fallback suffix)
-        // are caller-fixable like a bad body (Iter 26).
-        "invalid_model" => error_response(
+        // Unsupported id shapes (e.g. smart with a fallback suffix,
+        // pinned prefix with no model) are caller-fixable like a bad
+        // body (Iter 26, B16).
+        "invalid_model" | "model_not_provided" => error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
             rejection.code,
             rejection.message.clone(),
         ),
         // The classifier leg rejected the credentials: caller-fixable
-        // (BYOK) or operator-fixable (CLASSIFIER_API_KEY), reported as
-        // a 502 like other upstream credential failures (Iter 26).
+        // (BYOK-only since Q08 — caller key or classifier-key header),
+        // reported as a 502 like other upstream credential failures
+        // (Iter 26).
         "classifier_auth_error" => error_response(
             StatusCode::BAD_GATEWAY,
             "invalid_request_error",
@@ -2839,4 +3112,69 @@ fn error_response(status: StatusCode, kind: &str, code: &str, message: String) -
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insecure_base_warn_predicate() {
+        // S09: cleartext http to a non-loopback host warns.
+        assert!(insecure_base_url("http://192.168.1.10:8080/api"));
+        assert!(insecure_base_url("http://example.com/api"));
+        assert!(insecure_base_url("HTTP://example.com/api"));
+        // https and loopback stay silent (local-dev mocks keep working).
+        assert!(!insecure_base_url("https://openrouter.ai/api"));
+        assert!(!insecure_base_url("http://127.0.0.1:8080/api"));
+        assert!(!insecure_base_url("http://127.0.0.1/api"));
+        assert!(!insecure_base_url("http://localhost:8080/api"));
+        assert!(!insecure_base_url("http://localhost/api"));
+        assert!(!insecure_base_url("http://[::1]:8080/api"));
+    }
+
+    #[test]
+    fn proxy_allowlist_predicate() {
+        // Q10-B: reads always pass, whatever the path.
+        for method in [&Method::GET, &Method::HEAD, &Method::OPTIONS] {
+            assert!(is_proxy_allowed(method, "/api/v1/keys"));
+            assert!(is_proxy_allowed(method, "/v1/anything?x=1"));
+        }
+        // Known-safe inference writes pass in both spellings.
+        for path in [
+            "/v1/embeddings",
+            "/v1/completions",
+            "/v1/images/generations",
+            "/v1/audio/speech",
+            "/v1/audio/transcriptions",
+            "/v1/audio/translations",
+            "/v1/moderations",
+            "/api/v1/embeddings",
+            "/api/v1/moderations",
+        ] {
+            assert!(is_proxy_allowed(&Method::POST, path), "{path}");
+        }
+        // Canonicalization: encoded, doubled, trailing-slash, and
+        // query-string variants decide exactly like the plain form.
+        assert!(is_proxy_allowed(&Method::POST, "/v1/%65mbeddings"));
+        assert!(is_proxy_allowed(&Method::POST, "//v1//embeddings/"));
+        assert!(is_proxy_allowed(&Method::POST, "/v1/embeddings?limit=2"));
+        // Everything else fails closed: management shapes, unknown
+        // writes, traversal, and non-POST writes.
+        for path in [
+            "/api/v1/keys",
+            "/v1/keys",
+            "/api/v1/keys/",
+            "/api/v1/%6beys",
+            "/api/v1/credits/coinbase",
+            "/api/v1/workspaces/w1/budgets",
+            "/v1/some-new-thing",
+            "/api/v1/keys/%2e%2e",
+            "/v1/embeddings/extra",
+        ] {
+            assert!(!is_proxy_allowed(&Method::POST, path), "{path}");
+        }
+        assert!(!is_proxy_allowed(&Method::PUT, "/v1/embeddings"));
+        assert!(!is_proxy_allowed(&Method::DELETE, "/api/v1/keys/x"));
+    }
 }

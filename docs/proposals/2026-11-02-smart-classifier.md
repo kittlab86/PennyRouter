@@ -1,6 +1,6 @@
 # Proposal: Live per-request classifier — `openrouter/pair/smart`
 
-> Date: 2026-11-02 · Author: freeclaw · Status: Proposed (not yet implemented)
+> Date: 2026-11-02 · Author: freeclaw · Status: Implemented (Iter 26)
 > Depends on: Iter 22 on `upstream/main` — schema v4, tool-aware routing, curated `GET /v1/models`.
 > Companion: `docs/proposals/2026-11-01-openrouter-interface.md` (OpenRouter-native surface — no overlap).
 

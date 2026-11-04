@@ -6,6 +6,7 @@
 use crate::store::{Catalog, EndpointIndex};
 use crate::Error;
 use serde_json::Value;
+use std::collections::hash_map::Entry;
 
 pub struct ProcessSummary {
     pub processed: usize,
@@ -17,37 +18,48 @@ pub struct ProcessSummary {
 /// one lookup serves all of a model's endpoints.
 pub fn run_processing(catalog: &Catalog, processed_at: &str) -> Result<ProcessSummary, Error> {
     let endpoints = catalog.all_endpoints()?;
-    let mut models: std::collections::HashMap<String, Option<Value>> =
-        std::collections::HashMap::new();
-    let mut processed = 0;
-    for ep in &endpoints {
-        let payload: Value = serde_json::from_str(&ep.payload)?;
-        let model_payload = models.entry(ep.model_id.clone()).or_insert_with(|| {
-            catalog
-                .get_model(&ep.model_id)
-                .ok()
-                .flatten()
-                .and_then(|m| serde_json::from_str(&m.payload).ok())
-        });
-        catalog.update_endpoint_index(
-            ep.id,
-            &EndpointIndex {
-                price_prompt: extract_price(&payload, "prompt"),
-                price_completion: extract_price(&payload, "completion"),
-                price_cache_read: extract_price(&payload, "input_cache_read"),
-                price_cache_write: extract_price(&payload, "input_cache_write"),
-                precision_class: Some(classify_precision(&payload)),
-                promo_discount: extract_discount(&payload),
-                processed_at: processed_at.to_string(),
-                supports_tools: extract_tool_support(&payload),
-                supports_decisions: extract_decision_support(model_payload.as_ref()),
-            },
-        )?;
-        processed += 1;
-    }
-    catalog.set_meta("processed_at", processed_at)?;
-    catalog.set_meta("processed_count", &processed.to_string())?;
-    Ok(ProcessSummary { processed })
+    // One transaction for the whole run (plus its meta): a mid-run
+    // failure rolls every update back instead of half-processing.
+    catalog.transaction(|| {
+        let mut models: std::collections::HashMap<String, Option<Value>> =
+            std::collections::HashMap::new();
+        let mut processed = 0;
+        for ep in &endpoints {
+            let payload: Value = serde_json::from_str(&ep.payload)?;
+            // A broken model lookup fails the run like a broken
+            // endpoint payload: silently caching `None` would mark
+            // every endpoint unknown with no signal.
+            let model_payload = match models.entry(ep.model_id.clone()) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let row = catalog.get_model(&ep.model_id)?;
+                    let parsed = row
+                        .map(|model| serde_json::from_str(&model.payload))
+                        .transpose()?;
+                    entry.insert(parsed)
+                }
+            };
+            catalog.update_endpoint_index(
+                ep.id,
+                &EndpointIndex {
+                    price_prompt: extract_price(&payload, "prompt"),
+                    price_completion: extract_price(&payload, "completion"),
+                    price_cache_read: extract_price(&payload, "input_cache_read"),
+                    price_cache_write: extract_price(&payload, "input_cache_write"),
+                    precision_class: Some(classify_precision(&payload)),
+                    promo_discount: extract_discount(&payload),
+                    price_override_tokens: extract_override_tokens(&payload),
+                    processed_at: processed_at.to_string(),
+                    supports_tools: extract_tool_support(&payload),
+                    supports_decisions: extract_decision_support(model_payload.as_ref()),
+                },
+            )?;
+            processed += 1;
+        }
+        catalog.set_meta("processed_at", processed_at)?;
+        catalog.set_meta("processed_count", &processed.to_string())?;
+        Ok(ProcessSummary { processed })
+    })
 }
 
 /// Per-token price as f64; accepts a string or a number, else None.
@@ -97,7 +109,33 @@ fn extract_discount(payload: &Value) -> Option<f64> {
         Value::String(s) => s.parse().ok(),
         _ => None,
     }?;
-    (discount.is_finite() && discount >= 0.0).then_some(discount)
+    // Same 0.0..=1.0 range the promo windows enforce: an out-of-range
+    // value (e.g. an imported 2.0) extracts as unknown instead of
+    // clamping to cost 0 and publishing as permanently free.
+    (discount.is_finite() && (0.0..=1.0).contains(&discount)).then_some(discount)
+}
+
+/// First long-context price tier (Q13-C): the smallest
+/// `pricing.overrides[].min_prompt_tokens`, if any. Past this many
+/// input tokens the endpoint bills its override price instead of the
+/// base price, so the gateway skips the offering beyond it rather
+/// than silently billing ~2×. Missing/empty/garbage overrides mean
+/// no tier (`None`); a zero threshold means the base price never
+/// applies, which the gateway treats as never fitting.
+fn extract_override_tokens(payload: &Value) -> Option<i64> {
+    payload
+        .get("pricing")?
+        .get("overrides")?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| entry.get("min_prompt_tokens"))
+        .filter_map(|value| match value {
+            Value::Number(n) => n.as_i64(),
+            Value::String(s) => s.parse().ok(),
+            _ => None,
+        })
+        .filter(|tokens| *tokens >= 0)
+        .min()
 }
 
 /// Quantization label to precision class. Anything unrecognized (including
@@ -173,6 +211,32 @@ mod tests {
         assert_eq!(
             extract_price(&json!({"pricing": {"prompt": 0}}), "prompt"),
             Some(0.0)
+        );
+    }
+
+    /// Q13-C: the long-context tier threshold indexes the smallest
+    /// `min_prompt_tokens` across overrides; missing/empty/garbage
+    /// means no tier.
+    #[test]
+    fn override_threshold_indexes_minimum() {
+        assert_eq!(
+            extract_override_tokens(&json!({"pricing": {"overrides": [
+                {"min_prompt_tokens": 500000},
+                {"min_prompt_tokens": 272000},
+            ]}})),
+            Some(272000)
+        );
+        assert_eq!(
+            extract_override_tokens(&json!({"pricing": {"overrides": []}})),
+            None
+        );
+        assert_eq!(extract_override_tokens(&json!({"pricing": {}})), None);
+        assert_eq!(extract_override_tokens(&json!({})), None);
+        assert_eq!(
+            extract_override_tokens(
+                &json!({"pricing": {"overrides": [{"min_prompt_tokens": "abc"}]}})
+            ),
+            None
         );
     }
 

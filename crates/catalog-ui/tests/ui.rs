@@ -5,8 +5,8 @@
 //! content per route with it set.
 
 use pennyrouter_catalog::{
-    publish, publish_ranking, Catalog, ClassRanking, EndpointJudgment, EndpointRow, ModelRow,
-    RankEntry, RankingDocument,
+    publish, publish_ranking, Catalog, ClassRanking, EndpointIndex, EndpointJudgment, EndpointRow,
+    ModelRow, RankEntry, RankingDocument,
 };
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -52,7 +52,60 @@ fn artifact_dir(test: &str) -> std::path::PathBuf {
             judged_at: Some("t".to_string()),
             judge_model: Some("recorded".to_string()),
             judge_prompt: Some("recorded".to_string()),
+            price_override_tokens: None,
         })
+        .unwrap();
+    catalog
+        .insert_model(&ModelRow {
+            model_id: "a&b/c".to_string(),
+            name: "a&b/c".to_string(),
+            source: "test".to_string(),
+            payload: "{}".to_string(),
+            fetched_at: "t".to_string(),
+        })
+        .unwrap();
+    catalog
+        .insert_endpoint(&EndpointRow {
+            id: 0,
+            model_id: "a&b/c".to_string(),
+            provider_name: "AmpProvider".to_string(),
+            payload: "{}".to_string(),
+            fetched_at: "t".to_string(),
+            price_prompt: Some(4.4e-8),
+            price_completion: Some(1.25e-7),
+            price_cache_read: None,
+            price_cache_write: None,
+            precision_class: Some("fp16".to_string()),
+            promo_discount: None,
+            processed_at: Some("t".to_string()),
+            supports_tools: None,
+            supports_decisions: None,
+            quality_tier: None,
+            quality_score: None,
+            judged_at: None,
+            judge_model: None,
+            judge_prompt: None,
+            price_override_tokens: None,
+        })
+        .unwrap();
+    let amp = catalog.endpoints_for("a&b/c").unwrap();
+    assert_eq!(amp.len(), 1);
+    catalog
+        .update_endpoint_index(
+            amp[0].id,
+            &EndpointIndex {
+                price_prompt: Some(4.4e-8),
+                price_completion: Some(1.25e-7),
+                price_cache_read: None,
+                price_cache_write: None,
+                precision_class: Some("fp16".to_string()),
+                promo_discount: None,
+                processed_at: "t".to_string(),
+                supports_tools: None,
+                supports_decisions: None,
+                price_override_tokens: None,
+            },
+        )
         .unwrap();
     let ep = catalog.endpoints_for("m/ui").unwrap();
     assert_eq!(ep.len(), 1);
@@ -221,4 +274,38 @@ fn serves_runs_models_ranking_meta_and_log() {
 
     let log_page = get(&server, "/log");
     assert!(log_page.contains("line two"));
+}
+
+#[test]
+fn model_link_round_trips_special_chars_and_prices_render() {
+    let out = artifact_dir("encode");
+    let log = out.join("pipe.log");
+    let server = spawn(&out, &log);
+
+    let models = get(&server, "/models");
+    assert!(
+        models.contains("/endpoints?model=a%26b%2Fc"),
+        "id is percent-encoded in the href, got: {models}"
+    );
+    let filtered = get(&server, "/endpoints?model=a%26b%2Fc");
+    assert!(
+        filtered.contains("AmpProvider"),
+        "decoded filter matches the row, got: {filtered}"
+    );
+    assert!(
+        !filtered.contains("UiProvider"),
+        "filter hides other models, got: {filtered}"
+    );
+    assert!(
+        filtered.contains("4.40e-8"),
+        "tiny price renders non-zero, got: {filtered}"
+    );
+    assert!(
+        !filtered.contains("0.0000000"),
+        "tiny price never looks free, got: {filtered}"
+    );
+    assert!(
+        filtered.contains("0.0000001"),
+        "normal prices keep fixed precision, got: {filtered}"
+    );
 }

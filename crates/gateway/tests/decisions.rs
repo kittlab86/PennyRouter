@@ -131,6 +131,7 @@ fn build_db(path: &std::path::Path, with_capable: bool, with_paid: bool) {
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let id = catalog
@@ -153,10 +154,39 @@ fn build_db(path: &std::path::Path, with_capable: bool, with_paid: bool) {
                     processed_at: "t".to_string(),
                     supports_tools: None,
                     supports_decisions: Some(i64::from(decisions)),
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
     }
+}
+
+/// Q06-B: privacy virtual ids fail closed on the decisions route —
+/// the decisions API has no verified zero-retention field, so the
+/// gateway must not send the payload on a promise it cannot keep.
+/// Pinning a model directly stays available (explicit caller choice).
+#[tokio::test]
+async fn privacy_decision_fails_closed() {
+    let db = scratch_db("privacy-closed");
+    build_db(&db, true, true);
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mock = spawn_mock(mock_app(seen.clone(), vec![])).await;
+    let gw = spawn_gateway(mock, &db).await;
+
+    for model in [
+        "openrouter/pair/privacy/decision",
+        "openrouter/pair/privacy/decision/free",
+    ] {
+        let res = post_decisions(gw, model).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{model}");
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(
+            body["error"]["code"], "privacy_unsupported_on_decisions",
+            "{model}"
+        );
+    }
+    // Nothing reached upstream: the payload never left the gateway.
+    assert!(seen.lock().unwrap().paths.is_empty());
 }
 
 fn decisions_body(model: &str) -> String {
@@ -277,6 +307,91 @@ async fn throttled_free_falls_back_to_paid_decision() {
         guard.models,
         vec!["m/dfree".to_string(), "m/dpaid".to_string()]
     );
+}
+
+#[tokio::test]
+async fn decision_fallback_serves_paid_after_retry_also_429s() {
+    // B04 probe (decisions twin): free attempt + retry both 429, the
+    // configured fallback tier must still serve.
+    let db = scratch_db("fallback-retry");
+    build_db(&db, true, true);
+    // Second free decisions-capable offering so a retry leg exists.
+    {
+        let catalog = Catalog::open(&db).unwrap();
+        catalog
+            .insert_model(&ModelRow {
+                model_id: "m/dfree2".to_string(),
+                name: "m/dfree2".to_string(),
+                source: "test".to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+            })
+            .unwrap();
+        catalog
+            .insert_endpoint(&EndpointRow {
+                id: 0,
+                model_id: "m/dfree2".to_string(),
+                provider_name: "DecCo2".to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+                price_prompt: None,
+                price_completion: None,
+                price_cache_read: None,
+                price_cache_write: None,
+                precision_class: None,
+                promo_discount: None,
+                processed_at: None,
+                supports_tools: None,
+                supports_decisions: None,
+                quality_tier: None,
+                quality_score: None,
+                judged_at: None,
+                judge_model: None,
+                judge_prompt: None,
+                price_override_tokens: None,
+            })
+            .unwrap();
+        let id = catalog
+            .endpoints_for("m/dfree2")
+            .unwrap()
+            .iter()
+            .find(|e| e.provider_name == "DecCo2")
+            .unwrap()
+            .id;
+        catalog
+            .update_endpoint_index(
+                id,
+                &EndpointIndex {
+                    price_prompt: Some(0.0),
+                    price_completion: Some(0.0),
+                    price_cache_read: None,
+                    price_cache_write: None,
+                    precision_class: Some("fp16".to_string()),
+                    promo_discount: None,
+                    processed_at: "t".to_string(),
+                    supports_tools: None,
+                    supports_decisions: Some(1),
+                    price_override_tokens: None,
+                },
+            )
+            .unwrap();
+    }
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    // "m/dfree" throttles both free models (substring match).
+    let mock = spawn_mock(mock_app(seen.clone(), vec!["m/dfree"])).await;
+    let gw = spawn_gateway(mock, &db).await;
+
+    let res = post_decisions(gw, "openrouter/pair/decision/free/fallback/decision").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("x-pennyrouter-provider").unwrap(),
+        "PaidDec"
+    );
+    let guard = seen.lock().unwrap();
+    assert_eq!(guard.models.len(), 3);
+    assert_eq!(guard.models[2], "m/dpaid".to_string());
+    assert!(guard.models[..2].contains(&"m/dfree".to_string()));
+    assert!(guard.models[..2].contains(&"m/dfree2".to_string()));
 }
 
 #[tokio::test]

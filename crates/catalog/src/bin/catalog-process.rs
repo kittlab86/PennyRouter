@@ -12,7 +12,8 @@
 
 use pennyrouter_catalog::{
     build_judge, now_rfc3339, plan_live_calls, run_judging, run_judging_selected, run_processing,
-    select_endpoints, spend_line, BasetenJudge, Catalog, JudgeCatalog, ModalJudge, RecordedJudge,
+    select_endpoints, spend_line, BasetenJudge, Catalog, JudgeCatalog, JudgeEntry, ModalJudge,
+    RecordedJudge,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -177,17 +178,37 @@ fn run() -> Result<(), String> {
             .as_ref()
             .and_then(|catalog| catalog.resolve(backend).ok());
         let live = backend != "recorded";
-        let selected = if live && entry.is_some() {
+        // B19: sampling and caps apply to every live run, not just
+        // cataloged ones — bare `--judge-backend` runs used to ignore
+        // the flags and judge everything. Without a catalog the
+        // per-call cost is unknown, so a spend cap fails closed (the
+        // documented `plan_live_calls` semantics) while sampling and
+        // max_calls still bind.
+        let uncosted_entry = JudgeEntry {
+            backend: backend.clone(),
+            model: String::new(),
+            base_url: String::new(),
+            auth_env: Vec::new(),
+            prompt_version: String::new(),
+            cost_per_call_usd: None,
+            recording: None,
+        };
+        let plan_entry: Option<&JudgeEntry> = match entry {
+            Some(entry) if live => Some(entry),
+            None if live => Some(&uncosted_entry),
+            _ => None,
+        };
+        let selected = if live {
             let all = catalog.all_endpoints().map_err(|e| e.to_string())?;
             select_endpoints(&all, &policy)
         } else {
             catalog.all_endpoints().map_err(|e| e.to_string())?
         };
-        let plan = match &entry {
-            Some(entry) if live => {
+        let plan = match plan_entry {
+            Some(entry) => {
                 Some(plan_live_calls(selected.len(), entry, &policy).map_err(|e| e.to_string())?)
             }
-            _ => None,
+            None => None,
         };
         let summary = run_judging_selected(&catalog, judge.as_ref(), &selected, &stamp)
             .map_err(|e| e.to_string())?;
@@ -203,7 +224,7 @@ fn run() -> Result<(), String> {
             summary.matched,
             args.db.display()
         );
-        if let (Some(entry), Some(plan)) = (entry, plan) {
+        if let (Some(entry), Some(plan)) = (plan_entry, plan) {
             let spend = plan
                 .spend_usd
                 .map(|s| format!("{s:.4}"))

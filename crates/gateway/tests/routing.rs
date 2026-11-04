@@ -81,6 +81,7 @@ fn build_db(path: &std::path::Path, alpha_price: f64, beta_price: f64) {
         judged_at: None,
         judge_model: None,
         judge_prompt: None,
+        price_override_tokens: None,
     };
     for row in [
         endpoint("Alpha", "alpha"),
@@ -99,6 +100,7 @@ fn build_db(path: &std::path::Path, alpha_price: f64, beta_price: f64) {
         processed_at: "t".to_string(),
         supports_tools: None,
         supports_decisions: None,
+        price_override_tokens: None,
     };
     let judgment = |tier: &str| EndpointJudgment {
         quality_tier: Some(tier.to_string()),
@@ -280,6 +282,7 @@ fn build_free_db(path: &std::path::Path) {
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let ep = catalog.endpoints_for(model).unwrap().pop().unwrap();
@@ -296,6 +299,7 @@ fn build_free_db(path: &std::path::Path) {
                     processed_at: "t".to_string(),
                     supports_tools: None,
                     supports_decisions: None,
+                    price_override_tokens: None,
                 },
             )
             .unwrap();

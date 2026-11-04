@@ -28,6 +28,11 @@ The 1M-token body cap, timeouts, and error mapping apply to fallback
 calls exactly as to chat completions; no routing or rewriting applies.
 Metrics count them under `route="other"` (labels stay bounded — the
 path lives only in logs).
+Only hop-by-hop framing headers (plus `Proxy-Authorization` and
+`Connection`-nominated fields) are stripped — on fallback and chat
+paths alike; every other request header (`Cookie`, `X-Api-Key`,
+custom client headers) forwards verbatim to whichever upstream
+serves, so don't put unrelated secrets in headers.
 
 ## Endpoint status
 
@@ -41,7 +46,7 @@ path lives only in logs).
 | `GET /ui` | Debug UI (Iter 17): read-only snapshot, ranking, metrics page; registered only with `GATEWAY_UI=1`, otherwise falls through to fallback |
 | `GET /v1/models` | Curated menu: exactly the fourteen virtual ids, served locally (smart ids list even when unconfigured, in which case they fail closed) |
 | `POST /v1/embeddings`, `POST /v1/completions`, `/v1/audio/*`, `/v1/images/*`, `/v1/moderations`, `/v1/files`, `/v1/batches`, `/v1/fine_tuning/*`, `/v1/vector_stores` | Proxied + logged |
-| OpenRouter extras `/api/v1/auth/key`, `/api/v1/credits`, `/api/v1/generation`, `/api/v1/providers`, `/api/v1/models` | Proxied without doubling `/api` (Iter 25): native paths compose against the upstream root (configured base minus its `/api` prefix), so they reach OpenRouter as-is. Reads proxy; management writes (`/api/v1/keys`, `/api/v1/auth/key(s)`, `/api/v1/credits/coinbase`, `/api/v1/workspaces/*/budgets`) answer 403 `management_proxy_disabled` unless `ALLOW_MANAGEMENT_PROXY=1`. Note `GET /api/v1/models` returns the full upstream catalog, unlike the curated six-id `GET /v1/models` menu. |
+| OpenRouter extras `/api/v1/auth/key`, `/api/v1/credits`, `/api/v1/generation`, `/api/v1/providers`, `/api/v1/models` | Proxied without doubling `/api` (Iter 25): native paths compose against the upstream root (configured base minus its `/api` prefix), so they reach OpenRouter as-is. Reads proxy; management writes (`/api/v1/keys`, `/api/v1/auth/key(s)`, `/api/v1/credits/coinbase`, `/api/v1/workspaces/*/budgets`) answer 403 `management_proxy_disabled` unless `ALLOW_MANAGEMENT_PROXY=1`. Note `GET /api/v1/models` returns the full upstream catalog, unlike the curated fourteen-id `GET /v1/models` menu. |
 | Ollama-native `/api/chat`, `/api/generate`, `/api/tags`, `/api/show`, `/api/embed`, `/api/ps`, `/api/version` | Proxied as-is to the configured upstream + logged. OpenRouter hosts no such paths (upstream 404, still logged); with an Ollama upstream they pass straight through. No Ollama↔OpenAI translation yet. |
 | Anything else | Proxied as-is + logged |
 
@@ -58,8 +63,10 @@ The `model` field carries the OpenRouter model plus optional suffix filters
 default route — never an error. The `lowest` filter instead rewrites to
 the cheapest paid offering catalog-wide (no quality floor) and fails
 closed when none is eligible. `openrouter/pair/free/fallback/<tier>`
-serves free first, then exactly one pick from the named tier when
-free is exhausted. 429 responses carry `Retry-After` plus the
+serves free first, then exactly one pick from the named tier
+(`low|think|lowest|decision`; unknown targets fail closed with
+`no_eligible_offering`) when free is exhausted. 429 responses carry
+`Retry-After` plus the
 upstream's `X-RateLimit-*` headers when present. A `modal/` or `baseten/` prefix instead
 pins the request to that provider's upstream (see [routing.md](routing.md)):
 the prefix is stripped, the rest of the model id passes through verbatim,
@@ -83,7 +90,9 @@ with an OpenAI-shaped error instead of leaking the virtual id
 upstream: `budget_exceeded` (400) when no candidate fits
 `provider.max_price`, `tools_unsupported` (400) when a tool-bearing
 request has no tool-capable endpoint (disable `tools` or pick a
-tool-capable route), `quality_floor_unmet` / `no_eligible_offering`
+tool-capable route), `context_exceeded` (400) when the estimated
+input passes every eligible offering's override tier (shorten the
+input or pin a model), `quality_floor_unmet` / `no_eligible_offering`
 (503 + `Retry-After: 1`) when the tier floor or eligibility leaves
 nothing to serve. `POST /v1/responses` shares this whole contract.
 From Iter 26, `openrouter/pair/smart[/max]` (plus `privacy/`
@@ -112,12 +121,15 @@ the configured fallback tier; `smart/.../fallback/...` →
   shape: only the `decision` target is served; any other fallback
   target fails closed with 400 once the free leg actually needs it.
   Privacy-field enforcement is chat-only (unknown fields risk an
-  upstream 400).
+  upstream 400). Privacy virtual ids fail closed on this route
+  (`privacy_unsupported_on_decisions`, 400): pin a model directly
+  when you accept the upstream default policy.
 
 ## Limits
 
-- Requests up to 1M tokens must be supported (guarded from Iter 2: reject
-  oversize early, before contacting the backend).
+- Requests up to ~1M tokens must be supported (bytes/4 estimate, 4 MiB
+  cap; guarded from Iter 2: reject oversize early, before contacting
+  the backend).
 - Timeouts and upstream failures map to OpenAI-shaped error bodies with an
   appropriate HTTP status; the gateway never leaks backend internals beyond
   what the backend itself returns.

@@ -66,6 +66,11 @@ pub struct Offering {
     /// decisions, `None` when unknown. The `decision` tier matches
     /// only `Some(true)`.
     pub supports_decisions: Option<bool>,
+    /// First long-context price tier (Q13-C): input tokens at/above
+    /// this make the endpoint bill its override price instead of the
+    /// base price. `None` means no tier (or an old catalog) — the
+    /// offering always fits.
+    pub price_override_tokens: Option<u64>,
 }
 
 /// In-memory routing snapshot: model id to its offerings in load order.
@@ -503,6 +508,43 @@ fn tools_unsupported() -> RouteRejection {
     }
 }
 
+/// Long-context hardcap rejection (Q13-C): every remaining offering
+/// would bill its override tier, so serve nothing instead of billing
+/// ~2× silently. Caller-fixable like a budget violation: shorten the
+/// input or pin an offering whose tier fits.
+fn context_exceeded(label: &str) -> RouteRejection {
+    RouteRejection {
+        code: "context_exceeded",
+        message: format!(
+            "request context exceeds the single-price tier of every {label} offering: \
+             shorten the input or pin a model directly"
+        ),
+    }
+}
+
+/// Rough input-token estimate (Q13-C): message chars/4, summed over
+/// every string leaf under `messages` (plain strings and `content`
+/// part arrays alike). Documented heuristic, not a tokenizer: dense
+/// non-Latin text underestimates (fails open — the 2× tier can slip
+/// through), char-heavy ASCII overestimates (routes elsewhere, never
+/// an error). `None` when there is nothing measurable, so decisions
+/// bodies skip the cap.
+fn estimate_input_tokens(body: &serde_json::Value) -> Option<u64> {
+    fn chars(value: &serde_json::Value) -> u64 {
+        match value {
+            serde_json::Value::String(s) => s.chars().count() as u64,
+            serde_json::Value::Array(items) => items.iter().map(chars).sum(),
+            serde_json::Value::Object(map) => map.values().map(chars).sum(),
+            _ => 0,
+        }
+    }
+    let messages = body.get("messages")?.as_array()?;
+    if messages.is_empty() {
+        return None;
+    }
+    Some(messages.iter().map(chars).sum::<u64>() / 4)
+}
+
 /// Caller provider restrictions (Iter 11, F01; budget Iter 14):
 /// `only`/`ignore` lists plus an optional price ceiling from the
 /// incoming `provider` object. Candidates and sticky pins must satisfy
@@ -517,6 +559,11 @@ pub struct ProviderConstraints {
     /// True when the request body carries a non-empty `tools` array
     /// (Iter 22): only tool-capable endpoints may serve it.
     pub needs_tools: bool,
+    /// Estimated input tokens for this request (Q13-C, chars/4
+    /// heuristic over the message text). `None` when the body has no
+    /// measurable messages (decisions bodies, unparsable shapes) —
+    /// the context cap cannot apply, so everything fits.
+    pub input_tokens: Option<u64>,
 }
 
 impl ProviderConstraints {
@@ -576,6 +623,18 @@ impl ProviderConstraints {
             ignore: strings("ignore"),
             max_price,
             needs_tools,
+            input_tokens: estimate_input_tokens(body),
+        }
+    }
+
+    /// Long-context hardcap (Q13-C): an offering fits when the
+    /// request estimate stays strictly below its override threshold
+    /// (at the threshold the 2× tier already bills). No estimate or
+    /// no threshold means no cap — fail open, never guess.
+    pub fn context_allows(&self, offering: &Offering) -> bool {
+        match (self.input_tokens, offering.price_override_tokens) {
+            (Some(estimate), Some(threshold)) => estimate < threshold,
+            _ => true,
         }
     }
 
@@ -660,6 +719,12 @@ impl Router {
         if throttled.len() >= MAX_THROTTLES {
             let now = Instant::now();
             throttled.retain(|_, until| *until > now);
+            if throttled.len() >= MAX_THROTTLES {
+                // Still full of live entries: skip the insert (like
+                // `store_pin`). Routing continues, just without
+                // throttling this new pair — never unbounded.
+                return;
+            }
         }
         throttled.insert((model_id.to_string(), provider.to_string()), until);
     }
@@ -684,6 +749,22 @@ impl Router {
         } else {
             fresh
         }
+    }
+
+    /// Sticky pick within one pinned provider+class: the same ordering
+    /// the fresh path uses, restricted to the pin — never HashMap order.
+    /// The caller passes the tier's own comparator, so sticky and fresh
+    /// can only disagree on the provider, never on the ordering.
+    fn pinned_pick<'a>(
+        candidates: &[&'a Offering],
+        pin: &Pin,
+        compare: impl Fn(&&'a Offering, &&'a Offering) -> std::cmp::Ordering,
+    ) -> Option<&'a Offering> {
+        candidates
+            .iter()
+            .filter(|o| o.provider_name == pin.provider && o.precision_class == pin.precision_class)
+            .copied()
+            .min_by(compare)
     }
 
     /// Opaque session key: seeded hash of the credential plus the model
@@ -780,12 +861,20 @@ impl Router {
 
     /// Re-resolve the original source and swap the snapshot atomically.
     /// On failure the last good snapshot keeps serving. The ranking
-    /// refreshes best-effort alongside: a failed refresh keeps the last
-    /// good ranking rather than dropping to inline sort.
+    /// refreshes alongside: an absent ranking keeps the last good one
+    /// silently, but a present-but-bad ranking (hash mismatch, over-age
+    /// per B18) fails the reload so last good keeps serving *and* the
+    /// failure is counted upstream — a wedged sync must be visible,
+    /// never silently served.
+    /// Both artifacts load before either swaps (Q05): no file I/O sits
+    /// between the two swaps, so readers never catch a new snapshot
+    /// with a stale ranking for longer than the lock handoff — and a
+    /// failed reload swaps nothing at all.
     pub fn reload(&self) -> Result<(), RouteError> {
         let snapshot = Self::load_snapshot(&self.source)?;
+        let ranking = Self::load_ranking(&self.source)?;
         self.swap_snapshot(snapshot);
-        if let Some(ranking) = Self::discover_ranking(&self.source) {
+        if let Some(ranking) = ranking {
             self.swap_ranking(ranking);
         }
         Ok(())
@@ -802,8 +891,12 @@ impl Router {
         *self.ranking.write().unwrap_or_else(|e| e.into_inner()) = Some(ranking);
     }
 
-    /// Best-effort ranking discovery: a directory yields its newest
-    /// verified ranking, anything else yields nothing.
+    /// Best-effort ranking discovery for startup: a directory yields
+    /// its newest verified ranking, anything else yields nothing (the
+    /// router sorts inline). Bad artifacts dissolve into `None` here on
+    /// purpose — at startup there is no last-good to keep, and serving
+    /// inline beats refusing to start; `reload` uses `load_ranking`
+    /// directly so present-but-bad artifacts fail loudly instead.
     fn discover_ranking(path: &Path) -> Option<RankingDocument> {
         if !path.is_dir() {
             return None;
@@ -813,7 +906,8 @@ impl Router {
 
     /// Load a ranking from a directory (newest verified manifest wins;
     /// invalid candidates are skipped for older valid ones) or a
-    /// manifest file. `Ok(None)` means "no ranking here".
+    /// manifest file. `Ok(None)` means "no ranking here" — including a
+    /// catalog path, which carries no ranking and is not an error.
     fn load_ranking(path: &Path) -> Result<Option<RankingDocument>, RouteError> {
         if path.is_dir() {
             if let Some(manifest_path) =
@@ -823,6 +917,13 @@ impl Router {
             {
                 return Self::load_verified_ranking(&manifest_path).map(Some);
             }
+            return Ok(None);
+        }
+        let is_ranking_manifest = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("ranking-") && name.ends_with(".manifest.json"));
+        if !is_ranking_manifest {
             return Ok(None);
         }
         if !verify_ranking(path).map_err(|e| RouteError(e.to_string()))? {
@@ -839,7 +940,47 @@ impl Router {
         let manifest: pennyrouter_catalog::RankingManifest =
             serde_json::from_str(&raw).map_err(|e| RouteError(e.to_string()))?;
         let dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-        load_ranking_doc(&dir.join(&manifest.ranking_file)).map_err(|e| RouteError(e.to_string()))
+        let doc = load_ranking_doc(&dir.join(&manifest.ranking_file))
+            .map_err(|e| RouteError(e.to_string()))?;
+        if !Self::ranking_is_fresh(&doc) {
+            return Err(RouteError(format!(
+                "ranking too old (created_at {}): keeping last good",
+                doc.created_at
+            )));
+        }
+        Ok(doc)
+    }
+
+    /// B18/Q12-A staleness bound: twice the sync cadence. Reads the
+    /// sync container's `SYNC_INTERVAL`; unset or zero (run-once, dev)
+    /// falls back to twice the gateway's own reload cadence so the
+    /// gate works without cross-service env coupling. Zero floor so a
+    /// degenerate zero bound can never reject everything.
+    fn ranking_max_age() -> std::time::Duration {
+        let sync_secs = std::env::var("SYNC_INTERVAL")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let secs = if sync_secs > 0 {
+            2 * sync_secs
+        } else {
+            2 * crate::reload_interval_from_env().as_secs()
+        };
+        std::time::Duration::from_secs(secs.max(1))
+    }
+
+    /// True unless the ranking is provably older than the staleness
+    /// bound. Future stamps (clock skew) and unparseable stamps
+    /// (can't prove staleness — hash still verified) count as fresh.
+    fn ranking_is_fresh(doc: &RankingDocument) -> bool {
+        let Ok(created) = time::OffsetDateTime::parse(
+            &doc.created_at,
+            &time::format_description::well_known::Rfc3339,
+        ) else {
+            return true;
+        };
+        let age = time::OffsetDateTime::now_utc() - created;
+        age <= time::Duration::seconds(Self::ranking_max_age().as_secs() as i64)
     }
 
     /// Route one request. `model_field` is the raw `model` value,
@@ -909,11 +1050,20 @@ impl Router {
         if let Some(key) = &key {
             if let Some(pin) = self.lookup_pin(key) {
                 if constraints.allows(&pin.provider) {
+                    // Price caps override affinity: a pin above the
+                    // ceiling re-routes instead of sticking (Iter 14).
+                    // A pin that cannot serve tools re-routes too
+                    // (Iter 22): the upstream would 404 it. Filter first
+                    // like the fresh path, so a fitting second offering
+                    // of the pinned provider still sticks.
                     let mine: Vec<&Offering> = offerings
                         .iter()
                         .filter(|o| {
                             o.provider_name == pin.provider
                                 && o.precision_class == pin.precision_class
+                                && constraints.budget_allows(o)
+                                && constraints.tool_allows(o)
+                                && constraints.context_allows(o)
                         })
                         .collect();
                     if !mine.is_empty() {
@@ -925,20 +1075,14 @@ impl Router {
                             &mine,
                         );
                         if let Some(pick) = order.into_iter().next() {
-                            // Price caps override affinity: a pin above the
-                            // ceiling re-routes instead of sticking (Iter 14).
-                            // A pin that cannot serve tools re-routes too
-                            // (Iter 22): the upstream would 404 it.
-                            if constraints.budget_allows(pick) && constraints.tool_allows(pick) {
-                                return Some(Decision {
-                                    model_id,
-                                    provider: pick.provider_name.clone(),
-                                    tag: pick.tag.clone(),
-                                    precision_class: pick.precision_class.clone(),
-                                    orientation,
-                                    sticky: true,
-                                });
-                            }
+                            return Some(Decision {
+                                model_id,
+                                provider: pick.provider_name.clone(),
+                                tag: pick.tag.clone(),
+                                precision_class: pick.precision_class.clone(),
+                                orientation,
+                                sticky: true,
+                            });
                         }
                     }
                 }
@@ -957,6 +1101,7 @@ impl Router {
                     && constraints.allows(&o.provider_name)
                     && constraints.budget_allows(o)
                     && constraints.tool_allows(o)
+                    && constraints.context_allows(o)
             })
             .collect();
         let pick = ordered(
@@ -1289,7 +1434,14 @@ impl Router {
         if base.is_empty() {
             return Err(tools_unsupported());
         }
-        let budgeted: Vec<&Offering> = base
+        let fitting: Vec<&Offering> = base
+            .into_iter()
+            .filter(|o| constraints.context_allows(o))
+            .collect();
+        if fitting.is_empty() {
+            return Err(context_exceeded(&format!("{model_id:?}")));
+        }
+        let budgeted: Vec<&Offering> = fitting
             .into_iter()
             .filter(|o| constraints.budget_allows(o))
             .collect();
@@ -1301,32 +1453,67 @@ impl Router {
         }
         let candidates = self.skip_throttled(budgeted);
         let key = authorization.map(|auth| self.session_key(auth, model_field));
-        if let Some(key) = &key {
-            if let Some(pin) = self.lookup_pin(key) {
-                if let Some(pick) = candidates.iter().find(|o| {
-                    o.provider_name == pin.provider && o.precision_class == pin.precision_class
-                }) {
-                    return Ok(Decision {
-                        model_id: pick.model_id.clone(),
-                        provider: pick.provider_name.clone(),
-                        tag: pick.tag.clone(),
-                        precision_class: pick.precision_class.clone(),
-                        orientation: Orientation::Default,
-                        sticky: true,
-                    });
-                }
-            }
-        }
+        // Ranking + class resolve before the sticky branch: the pin's
+        // pick uses the same order as the fresh pick below. Prefer the
+        // published ranking for this model/class when it covers the
+        // candidates; otherwise fall back to inline cost (the same
+        // oriented sort the direct path uses for Default).
         let ranking = self.ranking.read().unwrap_or_else(|e| e.into_inner());
-        // Prefer the published ranking for this model/class when it
-        // covers the candidates; otherwise fall back to inline cost
-        // (the same oriented sort the direct path uses for Default).
         let class = majority_class_owned(&candidates);
         let ranked = ranking
             .as_ref()
             .and_then(|r| r.models.get(model_id))
             .and_then(|classes| classes.iter().find(|c| c.class == class))
             .map(|c| &c.default);
+        if let Some(key) = &key {
+            if let Some(pin) = self.lookup_pin(key) {
+                let mine: Vec<&Offering> = candidates
+                    .iter()
+                    .filter(|o| {
+                        o.provider_name == pin.provider && o.precision_class == pin.precision_class
+                    })
+                    .copied()
+                    .collect();
+                if !mine.is_empty() {
+                    let pick = match &ranked {
+                        Some(entries) => mine.iter().copied().min_by(|a, b| {
+                            let rank_pos = |o: &Offering| {
+                                entries
+                                    .iter()
+                                    .position(|e| e.provider == o.provider_name && e.tag == o.tag)
+                                    .unwrap_or(usize::MAX)
+                            };
+                            rank_pos(a)
+                                .cmp(&rank_pos(b))
+                                .then_with(|| {
+                                    inline_cost(a)
+                                        .partial_cmp(&inline_cost(b))
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .then_with(|| a.provider_name.cmp(&b.provider_name))
+                                .then_with(|| a.tag.cmp(&b.tag))
+                        }),
+                        None => mine.into_iter().min_by(|a, b| {
+                            inline_cost(a)
+                                .partial_cmp(&inline_cost(b))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| a.provider_name.cmp(&b.provider_name))
+                                .then_with(|| a.tag.cmp(&b.tag))
+                        }),
+                    };
+                    if let Some(pick) = pick {
+                        return Ok(Decision {
+                            model_id: pick.model_id.clone(),
+                            provider: pick.provider_name.clone(),
+                            tag: pick.tag.clone(),
+                            precision_class: pick.precision_class.clone(),
+                            orientation: Orientation::Default,
+                            sticky: true,
+                        });
+                    }
+                }
+            }
+        }
         let pick = if let Some(entries) = ranked {
             let mut order: Vec<&Offering> = Vec::with_capacity(candidates.len());
             let mut rest: Vec<&Offering> = candidates.clone();
@@ -1453,7 +1640,14 @@ impl Router {
                 message: format!("no offering meets the {tier_name} tier quality floor"),
             });
         }
-        let budgeted: Vec<&Offering> = floored
+        let fitting: Vec<&Offering> = floored
+            .into_iter()
+            .filter(|o| constraints.context_allows(o))
+            .collect();
+        if fitting.is_empty() {
+            return Err(context_exceeded(&format!("{tier_name} tier")));
+        }
+        let budgeted: Vec<&Offering> = fitting
             .into_iter()
             .filter(|o| constraints.budget_allows(o))
             .collect();
@@ -1466,11 +1660,21 @@ impl Router {
         let candidates = self.skip_throttled(budgeted);
         let key = authorization.map(|auth| self.session_key(auth, session_ns));
         // Sticky path: the pinned provider serves and already passed
-        // floor + budget (candidates are filtered), so keep it.
+        // floor + budget (candidates are filtered), so keep it — ordered
+        // by the same comparator as the fresh pick below.
         if let Some(key) = &key {
             if let Some(pin) = self.lookup_pin(key) {
-                if let Some(pick) = candidates.iter().find(|o| {
-                    o.provider_name == pin.provider && o.precision_class == pin.precision_class
+                if let Some(pick) = Self::pinned_pick(&candidates, &pin, |a, b| match tier {
+                    VirtualTier::Low => inline_cost(a)
+                        .partial_cmp(&inline_cost(b))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.model_id.cmp(&b.model_id))
+                        .then_with(|| a.provider_name.cmp(&b.provider_name)),
+                    _ => compare_signals(
+                        &Self::virtual_signals(a),
+                        &Self::virtual_signals(b),
+                        RankOrientation::Quality,
+                    ),
                 }) {
                     return Ok(Decision {
                         model_id: pick.model_id.clone(),
@@ -1560,7 +1764,14 @@ impl Router {
         if base.is_empty() {
             return Err(tools_unsupported());
         }
-        let budgeted: Vec<&Offering> = base
+        let fitting: Vec<&Offering> = base
+            .into_iter()
+            .filter(|o| constraints.context_allows(o))
+            .collect();
+        if fitting.is_empty() {
+            return Err(context_exceeded("paid"));
+        }
+        let budgeted: Vec<&Offering> = fitting
             .into_iter()
             .filter(|o| constraints.budget_allows(o))
             .collect();
@@ -1574,8 +1785,13 @@ impl Router {
         let key = authorization.map(|auth| self.session_key(auth, session_ns));
         if let Some(key) = &key {
             if let Some(pin) = self.lookup_pin(key) {
-                if let Some(pick) = candidates.iter().find(|o| {
-                    o.provider_name == pin.provider && o.precision_class == pin.precision_class
+                // Same cheapest-first comparator as the fresh pick below.
+                if let Some(pick) = Self::pinned_pick(&candidates, &pin, |a, b| {
+                    inline_cost(a)
+                        .partial_cmp(&inline_cost(b))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.model_id.cmp(&b.model_id))
+                        .then_with(|| a.provider_name.cmp(&b.provider_name))
                 }) {
                     return Ok(Decision {
                         model_id: pick.model_id.clone(),
@@ -1667,7 +1883,14 @@ impl Router {
         if base.is_empty() {
             return Err(tools_unsupported());
         }
-        let budgeted: Vec<&Offering> = base
+        let fitting: Vec<&Offering> = base
+            .into_iter()
+            .filter(|o| constraints.context_allows(o))
+            .collect();
+        if fitting.is_empty() {
+            return Err(context_exceeded(&format!("decisions-capable {scope}")));
+        }
+        let budgeted: Vec<&Offering> = fitting
             .into_iter()
             .filter(|o| constraints.budget_allows(o))
             .collect();
@@ -1681,8 +1904,13 @@ impl Router {
         let key = authorization.map(|auth| self.session_key(auth, session_ns));
         if let Some(key) = &key {
             if let Some(pin) = self.lookup_pin(key) {
-                if let Some(pick) = candidates.iter().find(|o| {
-                    o.provider_name == pin.provider && o.precision_class == pin.precision_class
+                // Same cheapest-first comparator as the fresh pick below.
+                if let Some(pick) = Self::pinned_pick(&candidates, &pin, |a, b| {
+                    inline_cost(a)
+                        .partial_cmp(&inline_cost(b))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.model_id.cmp(&b.model_id))
+                        .then_with(|| a.provider_name.cmp(&b.provider_name))
                 }) {
                     return Ok(Decision {
                         model_id: pick.model_id.clone(),
@@ -1802,6 +2030,22 @@ impl Router {
                         })
                         .copied()
                         .collect();
+                    // Throttled pins yield to fresh free alternatives
+                    // (the same availability rule as `skip_throttled`
+                    // on the full pool: a cooled pin re-serves only
+                    // when nothing fresh remains).
+                    let fresh_elsewhere = free.iter().any(|o| {
+                        !(o.provider_name == pin.provider
+                            && o.precision_class == pin.precision_class)
+                            && !self.is_throttled_pair(&o.model_id, &o.provider_name)
+                    });
+                    let mine: Vec<&Offering> = if fresh_elsewhere {
+                        mine.into_iter()
+                            .filter(|o| !self.is_throttled_pair(&o.model_id, &o.provider_name))
+                            .collect()
+                    } else {
+                        mine
+                    };
                     let order = ordered(
                         ranking.as_ref(),
                         FREE_MODEL,
@@ -3170,6 +3414,7 @@ impl Router {
                 constraints.allows(&o.provider_name)
                     && constraints.tool_allows(o)
                     && constraints.budget_allows(o)
+                    && constraints.context_allows(o)
             })
             .collect();
         if budgeted.is_empty() {
@@ -3258,6 +3503,17 @@ pub fn split_pinned(model_field: &str) -> Option<(&str, &str)> {
         Some((provider, rest))
     } else {
         None
+    }
+}
+
+/// True for `modal/` / `baseten/` with an empty or whitespace-only
+/// remainder (B16, Q01-A): addressed at a pinned provider but naming
+/// no model. Distinct from `split_pinned` (which rejects these) so
+/// the handler can fail closed instead of passing through.
+pub fn is_empty_pinned(model_field: &str) -> bool {
+    match model_field.split_once('/') {
+        Some((provider, rest)) => PINNED_PROVIDERS.contains(&provider) && rest.trim().is_empty(),
+        None => false,
     }
 }
 
@@ -3408,6 +3664,7 @@ fn offering_from(ep: &EndpointRow) -> Offering {
         quality_score: ep.quality_score,
         supports_tools: ep.supports_tools.map(|v| v != 0),
         supports_decisions: ep.supports_decisions.map(|v| v != 0),
+        price_override_tokens: ep.price_override_tokens.map(|v| v.max(0) as u64),
     }
 }
 
@@ -3440,7 +3697,11 @@ fn inline_cost(offering: &Offering) -> Option<f64> {
 /// Split a raw `model` field into (model id, tags) by longest-prefix
 /// match against known models. `None` means "not our model".
 fn split_model(snapshot: &Snapshot, model_field: &str) -> Option<(String, Vec<String>)> {
-    if snapshot.models.contains_key(model_field) {
+    // Heads longer than any known model id can never match, so skip the
+    // map probe there: `contains_key` hashes the whole head, which makes
+    // slash-heavy input quadratic. The max is O(models), allocation-free.
+    let max_id_len = snapshot.models.keys().map(String::len).max().unwrap_or(0);
+    if model_field.len() <= max_id_len && snapshot.models.contains_key(model_field) {
         return Some((model_field.to_string(), Vec::new()));
     }
     let mut rest = model_field;
@@ -3450,7 +3711,7 @@ fn split_model(snapshot: &Snapshot, model_field: &str) -> Option<(String, Vec<St
             return None;
         }
         tags.push(tail.to_string());
-        if snapshot.models.contains_key(head) {
+        if head.len() <= max_id_len && snapshot.models.contains_key(head) {
             tags.reverse();
             return Some((head.to_string(), tags));
         }
@@ -3621,6 +3882,46 @@ mod tests {
         assert!(relaxed.tool_allows(&unknown));
     }
 
+    #[test]
+    fn context_estimate_and_cap() {
+        // Every string leaf counts (roles and part tags included),
+        // chars/4: 8+4 + 8+4+4 = 28 chars → 7.
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "abcdefgh"},
+                {"role": "user", "content": [{"type": "text", "text": "abcdefgh"}]},
+            ],
+        });
+        assert_eq!(estimate_input_tokens(&body), Some(7));
+        // Nothing measurable means no cap.
+        assert_eq!(
+            estimate_input_tokens(&serde_json::json!({"model": "m"})),
+            None
+        );
+        assert_eq!(
+            estimate_input_tokens(&serde_json::json!({"model": "m", "messages": []})),
+            None
+        );
+        // from_body wires the estimate through.
+        let constraints = ProviderConstraints::from_body(&body);
+        assert_eq!(constraints.input_tokens, Some(7));
+        // Strictly below the threshold fits; at it the 2× tier bills.
+        let capped = Offering {
+            price_override_tokens: Some(8),
+            ..offering("A", Some(1.0), None)
+        };
+        assert!(constraints.context_allows(&capped));
+        let tight = ProviderConstraints {
+            input_tokens: Some(8),
+            ..ProviderConstraints::default()
+        };
+        assert!(!tight.context_allows(&capped));
+        // No threshold (or no estimate) always fits.
+        assert!(tight.context_allows(&offering("B", Some(2.0), None)));
+        assert!(ProviderConstraints::default().context_allows(&capped));
+    }
+
     fn offering(provider: &str, price: Option<f64>, tier: Option<&str>) -> Offering {
         // Completion mirrors prompt so effective cost equals price.
         Offering {
@@ -3637,6 +3938,7 @@ mod tests {
             quality_score: None,
             supports_tools: None,
             supports_decisions: None,
+            price_override_tokens: None,
         }
     }
 
@@ -3667,9 +3969,13 @@ mod tests {
     }
 
     fn router() -> Router {
+        router_with(snapshot())
+    }
+
+    fn router_with(snapshot: Snapshot) -> Router {
         Router {
             source: PathBuf::from("test"),
-            snapshot: RwLock::new(snapshot()),
+            snapshot: RwLock::new(snapshot),
             ranking: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
             seed: 0,
@@ -3721,6 +4027,27 @@ mod tests {
     }
 
     #[test]
+    fn split_model_stays_linear_on_slash_heavy_input() {
+        // C07 probe: 200k segments must not re-hash the shrinking head
+        // per segment (quadratic). A known model with a heavy tail must
+        // still resolve to the same (model, tags) pair.
+        let snap = snapshot();
+        let heavy_unknown = "a/".repeat(200_000) + "x";
+        let start = std::time::Instant::now();
+        assert_eq!(split_model(&snap, &heavy_unknown), None);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "split took {elapsed:?}, expected linear"
+        );
+        let heavy_known = format!("meta/muse-spark/{}", "t/".repeat(50_000));
+        let (model, tags) = split_model(&snap, heavy_known.trim_end_matches('/')).unwrap();
+        assert_eq!(model, "meta/muse-spark");
+        assert_eq!(tags.len(), 50_000);
+        assert!(tags.iter().all(|tag| tag == "t"));
+    }
+
+    #[test]
     fn tags_split_and_unknown_models_pass_through() {
         let snap = snapshot();
         let (model, tags) = split_model(&snap, "meta/muse-spark/privacy/low_cost").unwrap();
@@ -3728,6 +4055,115 @@ mod tests {
         assert_eq!(tags, vec!["privacy".to_string(), "low_cost".to_string()]);
         assert_eq!(split_model(&snap, "unknown/model"), None);
         assert_eq!(split_model(&snap, "meta/muse-spark/"), None);
+    }
+
+    #[test]
+    fn sticky_low_serves_cheapest_of_pinned_provider() {
+        // B03 probe: one provider with a cheap and a dear model must
+        // stick to the cheap one. Pre-fix the sticky pick follows
+        // HashMap order, so 20 independent sessions make a pre-fix
+        // pass ~1e-6 likely.
+        let snapshot = Snapshot {
+            models: HashMap::from([
+                (
+                    "m/cheap".to_string(),
+                    vec![priced("m/cheap", "P", 1.0, Some("high"))],
+                ),
+                (
+                    "m/dear".to_string(),
+                    vec![priced("m/dear", "P", 9.0, Some("high"))],
+                ),
+                (
+                    "m/other".to_string(),
+                    vec![priced("m/other", "Q", 5.0, Some("high"))],
+                ),
+            ]),
+            artifact_version: None,
+        };
+        let router = router_with(snapshot);
+        for n in 0..20 {
+            let auth = format!("Bearer probe-{n}");
+            let first = router.decide("openrouter/pair/low", Some(&auth)).unwrap();
+            assert_eq!(first.model_id, "m/cheap");
+            assert!(!first.sticky);
+            let second = router.decide("openrouter/pair/low", Some(&auth)).unwrap();
+            assert!(second.sticky, "session {n} did not stick");
+            assert_eq!(
+                second.model_id, "m/cheap",
+                "session {n} stuck to the dear model"
+            );
+            assert_eq!(second.provider, "P");
+        }
+    }
+
+    #[test]
+    fn sticky_free_skips_throttled_pin_for_fresh_alternative() {
+        // B05 probe: a throttled pinned free provider must yield to a
+        // fresh free alternative instead of re-serving its 429.
+        let snapshot = Snapshot {
+            models: HashMap::from([
+                (
+                    "m/a".to_string(),
+                    vec![priced("m/a", "P", 0.0, Some("high"))],
+                ),
+                (
+                    "m/b".to_string(),
+                    vec![priced("m/b", "Q", 0.0, Some("high"))],
+                ),
+            ]),
+            artifact_version: None,
+        };
+        let router = router_with(snapshot);
+        let auth = "Bearer free-probe";
+        let first = router.decide("openrouter/pair/free", Some(auth)).unwrap();
+        assert!(!first.sticky);
+        router.note_throttled(
+            &first.model_id,
+            &first.provider,
+            Instant::now() + Duration::from_secs(60),
+        );
+        let second = router.decide("openrouter/pair/free", Some(auth)).unwrap();
+        assert_ne!(
+            second.provider, first.provider,
+            "sticky re-hit the throttled pin"
+        );
+    }
+
+    #[test]
+    fn sticky_direct_uses_fitting_offering_not_just_ordered_head() {
+        // B06 probe: a pinned provider whose ordered head is over the
+        // price cap but whose second offering fits must stick to the
+        // fitting one instead of re-pinning elsewhere.
+        let snapshot = Snapshot {
+            models: HashMap::from([(
+                "m/direct".to_string(),
+                vec![
+                    priced("m/direct", "P", 9.0, Some("high")),
+                    priced("m/direct", "P", 1.0, Some("low")),
+                ],
+            )]),
+            artifact_version: None,
+        };
+        let router = router_with(snapshot);
+        let key = router.session_key("Bearer direct-probe", "m/direct");
+        router.store_pin(
+            key,
+            Pin {
+                provider: "P".to_string(),
+                precision_class: Some("fp16".to_string()),
+            },
+        );
+        let body = serde_json::json!({
+            "model": "m/direct",
+            "messages": [],
+            "provider": {"max_price": {"prompt": 2.0, "completion": 2.0}},
+        });
+        let constraints = ProviderConstraints::from_body(&body);
+        let decision = router
+            .decide_constrained("m/direct", Some("Bearer direct-probe"), &constraints)
+            .unwrap();
+        assert!(decision.sticky, "should keep the pinned provider");
+        assert_eq!(decision.provider, "P");
     }
 
     #[test]
@@ -4720,5 +5156,27 @@ mod tests {
             Some(Some("fp16".to_string()))
         );
         assert_eq!(majority_class(&[b, a]), Some(Some("fp8".to_string())));
+    }
+
+    #[test]
+    fn throttle_map_never_exceeds_cap() {
+        // I06: live entries past the cap are dropped, not stored.
+        let capped = router();
+        let far = Instant::now() + Duration::from_secs(3600);
+        for n in 0..(MAX_THROTTLES + 100) {
+            capped.note_throttled(&format!("m{n}"), "P", far);
+        }
+        assert_eq!(capped.throttled.read().unwrap().len(), MAX_THROTTLES);
+
+        // Expired entries still make room (reap path intact).
+        let reaped = router();
+        let past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        for n in 0..MAX_THROTTLES {
+            reaped.note_throttled(&format!("m{n}"), "P", past);
+        }
+        reaped.note_throttled("fresh", "P", far);
+        let map = reaped.throttled.read().unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&("fresh".to_string(), "P".to_string())));
     }
 }

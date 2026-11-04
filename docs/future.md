@@ -10,9 +10,9 @@ extra cost worth it, and who decides.
 
 ## Judge / decision model
 
-Use a model to review or score AI responses — realtime or in batch, with
-batch output feeding the ranking index. Open question: how to avoid a cost
-spiral of AI reviewing AI.
+Shipped since: offline batch judging feeds the ranking index (Iter 15).
+Still deferred: a realtime per-request judge. Open question: how to avoid
+a cost spiral of AI reviewing AI.
 
 ## Cheap local review loop
 

@@ -44,7 +44,13 @@ Deploy targets are env vars (see the header of
 the server. The dev compose file runs `catalog-sync` beside the
 gateway on the shared volume; it is still a separate process that
 shares only the versioned DB artifact (see
-[architecture.md](architecture.md)).
+[architecture.md](architecture.md)). `compose.prod.yaml` is
+gateway-only but mounts the same volume at `CATALOG_DB=/catalog`:
+the separately-deployed catalog-sync ships artifacts there, and an
+empty volume means standby passthrough until the first one lands
+(Q14-A). All gateway env (`UPSTREAM_MAX_*`, `RELOAD_INTERVAL_SECS`,
+`ALLOW_MANAGEMENT_PROXY`, `CLASSIFIER_*`) is forwarded in all three
+compose files with code defaults, so shipped `.env` values apply.
 
 CI builds `ghcr.io/lsk242/pennyrouter:latest` and smoke-tests `/health`
 on every PR, and pushes it on merges to main. It also rejects any
@@ -94,6 +100,24 @@ slot); beyond both, the gateway sheds with OpenAI-shaped 503 +
 fallback proxy — key creation, credit purchases, workspace budget
 changes — answer 403 `management_proxy_disabled` without touching
 upstream; set to `1` to proxy them. Reads are unaffected).
+`RELOAD_INTERVAL_SECS` (catalog reload cadence, default 60; 0 disables
+the background reload).
+Smart classifier leg (Iter 26): `CLASSIFIER_MODEL` (unset disables the
+smart ids, which fail closed; every other id keeps pure-local
+routing), `CLASSIFIER_BASE_URL` (default: the OpenRouter base),
+`CLASSIFIER_TIMEOUT_MS`, `CLASSIFIER_FALLBACK_TIER`
+(`low`/`lowest`), `CLASSIFIER_MAX_TOKENS`, `CLASSIFIER_MAX_INPUT_CHARS`.
+No stored key, ever (Q08): the leg uses the caller's `Authorization`
+header, optionally overridden per-request by
+`x-pennyrouter-classifier-key`.
+Catalog pipeline: `CATALOG_IMAGE` (sync image tag), `SYNC_INTERVAL`
+(seconds between sync cycles, 0 = run once), `FETCH_OPENROUTER`
+(1 = live fetch, 0 = baked fixtures), `EXTRA_MODEL_IDS`
+(comma-separated ids fetched individually), judge keys
+(`BASETEN_API_KEY`, `MODAL_KEY_ID`/`MODAL_KEY_SECRET`,
+`MODAL_JUDGE_URL`; unset = recorded-fixture judging), `CATALOG_UI`
+(`1` lets the catalog-ui browser start). Exact defaults live in
+[`.env.example`](../.env.example), which stays canonical.
 
 ## OpenRouter-native clients (Iter 25)
 
@@ -165,7 +189,17 @@ code runs when they are off.
   `/ui/preview`) unregistered — the paths fall through to the
   fallback proxy like any unknown path. `GET /` always serves a
   fixed landing page (version, build hash, config status, links)
-  instead of proxying upstream.
+  instead of proxying upstream. The gateway binds 0.0.0.0: `/ui`,
+  `/metrics`, and `/` are unauthenticated by design, so expose the
+  port beyond localhost only behind your own firewall (same rule as
+  catalog-ui above); beyond a LAN, terminate TLS in front.
+- Public surface (Q09-A): no gateway route requires an operator
+  credential — routing is pure BYOK (the caller's key rides each
+  request), smart/preview need only the caller's key, and `/metrics`
+  is always open. That is the product choice, stated loudly: run it
+  on localhost, or behind firewall + TLS with source CIDRs (the
+  Terraform stage does this). There is no shared-secret gate; do not
+  invent one per deploy.
 - Inspector (Iter 29): `/ui` shows ten fixed non-smart virtual combos
   top-3 plus a custom-model box. Paste the exact `Authorization`
   header value; the page sends it as the `Authorization` header to
@@ -175,9 +209,11 @@ code runs when they are off.
   class, tier/score, tools, decisions, promo, free, availability,
   rank) plus the sticky pick (with this key) vs the fresh pick (no
   session) and the session hash. The raw key is never logged and
-  never stored; previews never create pins. Smart ids preview as an
-  explanatory rejection (their tier comes from the live classifier
-  leg). Missing `model` answers 400, no router answers 503.
+  never stored; previews never create pins. Plain-request view: tools,
+  budget, and only/ignore constraints are not applied, so a capped
+  request can fail closed where the preview shows a pick. Smart ids
+  preview as an explanatory rejection (their tier comes from the live
+  classifier leg). Missing `model` answers 400, no router answers 503.
 - Catalog: `CATALOG_UI=1 catalog-ui --dir <artifact-dir>
   [--port 8080] [--log-file <path>]` serves a browser over the
   published artifacts: run history (manifests newest-first with
@@ -203,7 +239,11 @@ re-resolves its `CATALOG_DB` directory every `RELOAD_INTERVAL_SECS`
 (default 60s, 0 disables) and atomically publishes the new snapshot
 and ranking, keeping the last good ones when a reload fails or an
 artifact is missing; reload attempts are counted in
-`pennyrouter_catalog_reload_total{result="ok|error"}`.
+`pennyrouter_catalog_reload_total{result="ok|error"}`. Last-good
+retention and joint atomicity are different properties: each of
+snapshot and ranking keeps its own last good copy, but the two swap
+in sequence, so a reader can briefly see a new snapshot with the
+previous ranking.
 From Iter 7, "cheapest" means effective cost under the balanced
 workload profile (see [pricing.md](pricing.md)), and `openrouter/free`
 routes to any free offering.

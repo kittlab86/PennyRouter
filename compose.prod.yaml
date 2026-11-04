@@ -7,6 +7,10 @@
 # The image comes from GitHub Packages (ghcr.io), pushed by CI on every
 # merge to main. No `build:` section on purpose (CI-guarded).
 # Gateway only: catalog-sync deploys separately (see docs/architecture.md).
+# The catalog artifact still arrives here: the separate catalog-sync
+# ships versioned DB files into the shared catalog-data volume, which
+# the gateway mounts read-only and picks up via reload. An empty volume
+# means standby passthrough until the first artifact lands.
 services:
   gateway:
     image: ${IMAGE:-ghcr.io/lsk242/pennyrouter:latest}
@@ -19,4 +23,20 @@ services:
       MODAL_BASE_URL: ${MODAL_BASE_URL:-}
       BASETEN_BASE_URL: ${BASETEN_BASE_URL:-https://inference.baseten.co}
       GATEWAY_UI: ${GATEWAY_UI:-}
+      CATALOG_DB: ${CATALOG_DB:-/catalog}
+      UPSTREAM_MAX_CONCURRENT: ${UPSTREAM_MAX_CONCURRENT:-64}
+      UPSTREAM_MAX_QUEUED: ${UPSTREAM_MAX_QUEUED:-128}
+      RELOAD_INTERVAL_SECS: ${RELOAD_INTERVAL_SECS:-60}
+      ALLOW_MANAGEMENT_PROXY: ${ALLOW_MANAGEMENT_PROXY:-}
+      CLASSIFIER_MODEL: ${CLASSIFIER_MODEL:-}
+      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-}
+      CLASSIFIER_TIMEOUT_MS: ${CLASSIFIER_TIMEOUT_MS:-8000}
+      CLASSIFIER_FALLBACK_TIER: ${CLASSIFIER_FALLBACK_TIER:-low}
+      CLASSIFIER_MAX_TOKENS: ${CLASSIFIER_MAX_TOKENS:-64}
+      CLASSIFIER_MAX_INPUT_CHARS: ${CLASSIFIER_MAX_INPUT_CHARS:-32000}
+    volumes:
+      - catalog-data:/catalog:ro
     restart: unless-stopped
+
+volumes:
+  catalog-data:

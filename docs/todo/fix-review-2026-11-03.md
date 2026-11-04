@@ -100,6 +100,10 @@ options are marked ★.
 - **Accept**: new test in `crates/gateway/tests/resilience.rs`: SSE upstream,
   `max_upstream=1`, second stream request sheds/queues while first is open,
   proceeds after first closes. `cargo test -p pennyrouter-gateway`.
+  Probe result (2026-11-04): pre-fix the second request returned 200
+  (slot leaked at headers); post-fix 503 while open, 200 after close
+  (`open_sse_stream_holds_the_upstream_slot`, resilience 3/3). S06
+  closed by the same test.
 - **Files**: `crates/gateway/src/lib.rs`, `crates/gateway/tests/resilience.rs`. **Size: S.**
 
 ### C02 — Classifier size cap checked after unbounded download [HIGH → also S07]
@@ -116,6 +120,9 @@ options are marked ★.
   → request still completes via fallback tier, memory bounded (assert on
   error kind, not RSS). Add probe first (U03): oversized reply today must
   show the unbounded collect (log/response length) before fixing.
+  Probe result (2026-11-04): pre-fix the oversized stream waited out
+  the 2 s classifier timeout; post-fix it fails fast (~170 ms) via
+  `Invalid` → fallback tier (`smart_classifier` 18/18 green).
 - **Files**: `crates/gateway/src/lib.rs`, `crates/gateway/tests/smart_classifier.rs`. **Size: S.**
 
 ### C06 — Classifier truncation is quadratic [MED]
@@ -132,6 +139,8 @@ options are marked ★.
 - **Accept**: probe first (U03): 200k tiny messages today times out /
   >2 s; after fix, classified or fallback within the classifier timeout.
   Existing `smart_classifier` tests stay green.
+  Probe result (2026-11-04): 10k-message probe took 77.69 s pre-fix
+  (quadratic confirmed), 0.02 s post-fix (linear).
 - **Files**: `crates/gateway/src/classifier.rs`. **Size: S.**
 
 ### C07 — `split_model` is quadratic on slash-heavy ids [MED]
@@ -149,6 +158,8 @@ options are marked ★.
 - **Accept**: probe first (U03): slash-heavy 100k-segment model string
   today exceeds 2 s; after fix <100 ms and routes/404s identically.
   `crates/gateway/tests/routing.rs` + unit `split_model` tests green.
+  Probe result (2026-11-04): 95.39 s pre-fix, 0.03 s post-fix
+  (`split_model_stays_linear`, routing 44/44 green).
 - **Files**: `crates/gateway/src/routing.rs`. **Size: S–M.**
 
 ### C08 — `spawn_reload_task` panics on interval 0; no severity rubric [LOW]
@@ -163,7 +174,12 @@ options are marked ★.
   to the header template of future review docs (docs-only, with F7).
 - **Accept**: unit test `spawn_reload_task` with `Duration::ZERO` does not
   panic and never ticks. `cargo test -p pennyrouter-gateway --lib`.
+  Probe result (2026-11-04): pre-fix panics (proven via stash);
+  post-fix no-op handle, reload suite 6/6 green.
 - **Files**: `crates/gateway/src/lib.rs`. **Size: S.**
+  Decided (2026-11-04, Q18): rubric added to `docs/review/METHOD.md`
+  as the header template (Critical/High/Medium/Low + dedup-by-root-cause);
+  docs-only, no test applicable.
 
 ---
 
@@ -323,6 +339,9 @@ options are marked ★.
   serve as the regression test.
 - **Accept**: probe test: re-sync with a poisoned endpoint keeps the old
   endpoints after the error; row counts unchanged.
+  Probe result (2026-11-04): pre-fix the poisoned re-sync left the
+  model endpoint-less (delete committed, insert aborted); post-fix
+  `failed_resync_keeps_prior_endpoints` keeps all 3 (gather green).
 - **Files**: `crates/catalog/src/store.rs`, `sync.rs`, `process.rs`,
   `judge.rs`, `crates/catalog/tests/sync.rs` (or `gather.rs`). **Size: M.**
 
@@ -369,7 +388,15 @@ options are marked ★.
   `max(ends_at)` over active 100%-off windows. (B) keep last-wins as
   documented intent — then B07's fix alone stands and this task becomes a
   doc clarification in `docs/pricing.md`.
-- **Accept** (A): `price` test: Apr+Feb windows → Apr. **Files**:
+- **Accept** (A): `price` test: Apr+Feb windows → Apr. Probe result
+  (2026-11-04): pre-fix published Feb (last-in-file); post-fix Apr in
+  both file orders (`free_until_returns_latest_expiry`). Key-check
+  follow-up (same day): per-key daily free caps are orthogonal —
+  `GET /api/v1/key` reports `free_model_daily_requests`
+  used/limit/remaining per key, enforced upstream as 429s, which the
+  free leg already converts to retry + fallback; no gateway change,
+  one doc sentence in `docs/routing.md`. "No free-until date" means
+  no time-boxed promo window, never unlimited freeness. **Files**:
   `crates/catalog/src/price.rs`. **Size: S.**
 
 ### B09 — Manifest counts unverified, can diverge from DB [MEDIUM]
@@ -399,7 +426,10 @@ options are marked ★.
   skipped > 50% of fetched ids; thresholds are constants, not new env
   knobs. (B) warn-only + `pennyrouter_…` log line. Get the numbers confirmed.
 - **Accept**: test: 0-model and >50%-skipped fixtures → no publish /
-  non-zero exit; normal fixture publishes. **Files**:
+  non-zero exit; normal fixture publishes. Probe result (2026-11-04):
+  pre-fix both published (exit 0); post-fix both refuse with
+  "refusing to publish", last-good survives, no new DB, no work DB
+  (`sync_cli` 3/3). **Files**:
   `crates/catalog/src/main.rs`, `crates/catalog/tests/…`. **Size: S–M.**
 
 ### B18 — No staleness gate on ranking [Medium]
@@ -427,7 +457,11 @@ options are marked ★.
   final signal tie-break before identity. Deterministic-bytes property
   must be re-proven (existing rank tests pin it).
 - **Accept**: `rank` tests: unknown vs 0.1% → measured wins; equal
-  quality/price → lower latency first. **Files**:
+  quality/price → lower latency first. Probe result (2026-11-04):
+  both probes failed pre-fix; post-fix green including the updated
+  `measured_error_beats_unknown` contract test (old neutral-unknown
+  rule overturned by Q02-A). Deterministic-bytes rank suites green.
+  **Files**:
   `crates/catalog/src/rank.rs`, `crates/catalog/tests/rank.rs`. **Size: S.**
 
 ---
@@ -500,6 +534,11 @@ options are marked ★.
   (OpenAI-shaped), matching virtual fail-closed; update the one test.
   (B) keep passthrough and close the todo item as wontfix-documented.
 - **Accept** (A): test asserts 400 + code; non-empty pinned routes unchanged.
+  Probe result (2026-11-04): pre-fix 200 passthrough; post-fix 400
+  `model_not_provided` for `modal/`, `baseten/`, `modal/ ` with zero
+  upstream hits (`empty_remainder_fails_closed`, providers 7/7). The
+  empty check runs before `split_pinned` so whitespace can't slip
+  through as a model id.
 - **Files**: `crates/gateway/src/routing.rs` (+ handler in `lib.rs`),
   `crates/gateway/tests/providers.rs`. **Size: S.**
 
@@ -516,6 +555,19 @@ options are marked ★.
   violates the simple/fast goal. (B) bucketed pricing: rejected unless
   the user explicitly wants it.
 - **Accept** (A): doc line + link audit. **Files**: `docs/pricing.md`. **Size: S.**
+  Decided C (2026-11-04, Q13): hardcap instead of a doc limitation —
+  sync indexes each endpoint's first override tier
+  (`price_override_tokens`, min `min_prompt_tokens`, established
+  ALTER-column pattern, no version bump); the gateway estimates
+  input tokens (chars/4 over message text, documented heuristic) and
+  skips over-tier offerings across all 7 pick sites incl. sticky
+  re-pin, failing closed with `context_exceeded` (400) when nothing
+  fits. No truncation ever. Proven: `extract_override_tokens` +
+  `override_threshold_indexed_from_payload` + migration assert (catalog);
+  `context_estimate_and_cap` (unit) +
+  `over_threshold_request_skips_capped_offering` +
+  `all_capped_request_fails_closed` (gateway); `docs/pricing.md` +
+  `docs/api.md` match the code.
 
 ---
 
@@ -539,6 +591,13 @@ Anything needing a product choice waits on its Q.
 - **Accept**: test: smart request without auth + operator key → 401, zero
   classifier calls; with auth → classified. **Files**:
   `crates/gateway/src/lib.rs`, `crates/gateway/tests/smart_classifier.rs`. **Size: S.**
+  Decided custom (2026-11-04, Q08): BYOK-only — `CLASSIFIER_API_KEY`
+  removed entirely, no stored key ever. Nothing operator-funded left
+  to gate, so no 401: the leg uses the caller key
+  (`classifier_leg_forwards_caller_key`, env key proven ignored) with
+  an `x-pennyrouter-classifier-key` per-request override
+  (`classifier_key_header_overrides_caller_key`), plus a
+  `classifier_auth` unit test. Upstream still validates keys.
 
 ### S02 — No gateway authentication; binds 0.0.0.0 [MEDIUM, exploitable-conditional]
 
@@ -557,6 +616,9 @@ Anything needing a product choice waits on its Q.
   Pick A alone unless multi-tenant exposure is planned.
 - **Accept**: (A) docs line; (B) tests for allow/deny per route group.
 - **Files**: docs (A) or `crates/gateway/src/lib.rs` + tests (B). **Size: S.**
+  Decided A (2026-11-04, Q09): public BYOK kept, stated loudly in
+  `docs/operations.md` (Debug UIs firewall line + Public surface
+  note). No token gate.
 
 ### S03 — Management-write deny is a raw-path denylist [MEDIUM, hardening]
 
@@ -570,12 +632,23 @@ Anything needing a product choice waits on its Q.
   native SDK reads. (C) accept: upstream enforces account perms anyway.
 - **Accept**: tests: `%2e%2e`, `//`, encoded variants → 403 like plain forms.
 - **Files**: `crates/gateway/src/lib.rs`. **Size: S.**
+  Decided B (2026-11-04, Q10): denylist replaced by `is_proxy_allowed`
+  — reads pass, POST only allowlisted inference shapes
+  (embeddings/completions/images/audio/moderations, either spelling),
+  everything else 403. Canonicalize-once folded in
+  (`canonical_path`: decode, collapse `//`, strip trailing `/`).
+  Proven: `management_write_bypass_variants_denied`,
+  `unknown_write_denied_by_default`,
+  `allowlisted_inference_writes_proxy` + `proxy_allowlist_predicate`
+  unit test; all prior deny/read/flag tests unchanged green.
 
 ### S04 — Privacy decisions ids get no zdr enforcement [MEDIUM → product P06]
 
 Same root as P06; decided by Q06, fixed (or documented) there. Security
 acceptance either way: a test or doc line proving `/v1/decisions` privacy
 behaviour matches `docs/api.md:72-78`. No duplicate work — track under P06.
+Decided with P06 (2026-11-04, Q06-B): `privacy_decision_fails_closed`
+is the security regression test (400 + zero upstream hits).
 
 ### S05 — Caller key + history forwarded to foreign classifier base [MEDIUM, conditional]
 
@@ -592,6 +665,10 @@ behaviour matches `docs/api.md:72-78`. No duplicate work — track under P06.
   Do not strip the key (BYOK legs need it).
 - **Accept**: unit test on the warning predicate; docs unchanged otherwise.
 - **Files**: `crates/gateway/src/lib.rs`. **Size: S.**
+  Decided away (2026-11-04, Q08): no operator key exists to be
+  missing, so the warning, its predicate, and its test were removed;
+  the caller key flows by model-choice consent (documented in
+  `.env.example`, `docs/operations.md`, `docs/routing.md`).
 
 ### S06 — SSE permit drop [MEDIUM availability] → fixed as C01
 
@@ -614,6 +691,9 @@ security regression test. Close S07 when C02 lands.
   gateway UI + metrics. (B) covered by the Q09-B token gate. No separate
   auth system for the UI (over-engineering).
 - **Accept**: docs line (A) or gate test (B). **Files**: `docs/operations.md` (A). **Size: S.**
+  Decided A (2026-11-04, Q09): covered by the same Debug UIs
+  firewall line (gateway `/ui` + `/metrics` behind firewall, like
+  catalog-ui). No UI auth system.
 
 ### S09 — Base URLs lack scheme/host validation [LOW, hardening]
 
@@ -717,6 +797,13 @@ items are P08 (Q07) and the ledger updates. Link audit must pass
   fields (Iter 27 deliberately avoided unknown fields; do not guess).
 - **Accept**: (A) `api.md` + `routing.md` wording identical to code;
   (B) integration test with privacy decisions id. **Size: S.**
+  Decided B-variant (2026-11-04, Q06): no field injection (still
+  unverified upstream) — instead `POST /v1/decisions` fails
+  `privacy/*` closed (`privacy_unsupported_on_decisions`, 400) before
+  routing, so the payload never leaves the gateway on an unkeepable
+  promise. Pinning a model directly stays the explicit escape hatch.
+  Proven by `privacy_decision_fails_closed` (both scopes, zero
+  upstream hits); `docs/api.md` + `docs/routing.md` match the code.
 
 ### P07 — Speed/latency/throughput/region tags silently no-op [Medium]
 
@@ -759,6 +846,9 @@ Fixed by D01–D03 below (single source of truth pass). No separate work.
   already listed: I04 parses, I07 metrics alloc) — do not fix blind.
 - **Accept**: 5 result dirs + roadmap numbers updated; claim kept or
   reworded to match. **Files**: `docs/roadmap.md`, `docs/performance.md`. **Size: M** (runs, not code).
+  Decided/confirmed (2026-11-04, Q17): 5/5 runs green, medians above,
+  bug-todo P0 closed, no latency iteration (bar unchallenged). "Blazing-fast"
+  claims stand on these numbers.
 
 ### P11 — "1M tokens" is a byte heuristic [Medium]
 
@@ -845,6 +935,13 @@ Fixed by D01–D03 below (single source of truth pass). No separate work.
   the vars; a compose smoke with `CLASSIFIER_MODEL` set reaches the
   classifier panel. **Files**: `compose.yaml`, `compose.prod.yaml`,
   `compose.dev.yaml`, `docs/operations.md`, `docs/roadmap.md`. **Size: M.**
+  Decided A (2026-11-04, Q14): all three files forward the full
+  gateway env with code defaults; prod mounts `CATALOG_DB=/catalog`
+  on the shared volume (separate sync ships artifacts there; empty =
+  standby). Verified: `make prod-config` OK, all three render,
+  `CLASSIFIER_MODEL=test-model` flows through `config`; the gateway
+  honoring it is covered by `smart_classifier` 21/21 (no live docker
+  boot in this environment).
 
 ### D08 — Entrypoint env undocumented (reverse gap) [MEDIUM]
 
@@ -891,6 +988,14 @@ Do only after F1 lands (shared `lib.rs` regions). Anything marked
   Do not pre-tune constants without the run.
 - **Accept**: recorded RSS at defaults + chosen lever implemented with
   a saturation test. **Files**: `tests/load/`, then `lib.rs`. **Size: M.**
+  Decided by numbers (2026-11-04, Q15): peak RSS 15.0–15.5 MiB flat
+  across the N=5 runs (1 GB profile) + 11 MiB under virtual routed
+  load — no saturation, no lever pulled, no code change. Harness now
+  samples `stats.jsonl` per run (`compare.sh`). Side finding:
+  fixture catalogs serve no virtual tier unjudged
+  (`quality_floor_unmet` — no tiers without judgments); the virtual
+  run used recorded judgments + one load-only Tencent tier (in the
+  results dir, not committed to fixtures).
 
 ### I02 — Queue wait has no deadline [MEDIUM]
 
@@ -905,6 +1010,12 @@ Do only after F1 lands (shared `lib.rs` regions). Anything marked
   (test with a shortened injected timeout, not a real 30s sleep).
 - **Files**: `crates/gateway/src/lib.rs`,
   `crates/gateway/tests/resilience.rs`. **Size: S.**
+  Decided A (2026-11-04, Q04): the queued `acquire_owned` waits at
+  most `timeouts.first_chunk` (30s default, no new knob), then sheds
+  through the existing load-shed path (all 7 `None` arms already do).
+  Retry/fallback legs share the deadline on re-entry. Proven by
+  `queued_request_sheds_after_deadline` (hung pre-fix, 503+Retry-After
+  in ~300ms with an injected 300ms budget).
 
 ### I03 — Reload blocks a worker; snapshot+ranking not jointly atomic [MEDIUM]
 
@@ -922,6 +1033,17 @@ Do only after F1 lands (shared `lib.rs` regions). Anything marked
 - **Accept**: reload test proves no mixed pair is observable (A) or
   docs match (B); corrupt-artifact last-good test stays green.
 - **Files**: `crates/gateway/src/routing.rs`, `crates/gateway/src/lib.rs`. **Size: M.**
+  Decided A-conditional (2026-11-04, Q05): the joint-`Arc` swap
+  failed the smallness test (14 lock-reader sites + ctors + tests ≈
+  100 lines), so instead: (1) the reload task runs `Router::reload`
+  via `spawn_blocking` — blocking SQLite/file I/O never stalls the
+  1-CPU async worker; (2) `reload` loads snapshot + ranking before
+  either swap — no I/O between swaps, and a failed reload swaps
+  nothing at all (previously a stale ranking still swapped the fresh
+  snapshot). The residual is a lock-handoff instant, documented in
+  `docs/operations.md` as before. Proven by the strengthened
+  `stale_ranking_is_rejected_and_keeps_last_good` (fails on the old
+  order via stash, passes now) with the reload suite 7/7 green.
 
 ### I04 — Hot-path repeated full-body parses/clones [MEDIUM]
 
@@ -952,6 +1074,9 @@ Do only after F1 lands (shared `lib.rs` regions). Anything marked
   with I03-A). Do not refactor speculatively.
 - **Accept**: deferred note recorded here; or, if triggered, same routing
   tests + reload-under-load test. **Size: M if done.**
+  Decided defer (2026-11-04, Q16): 2026-11-04 numbers show no stall
+  (p99 ≤0.52ms, RSS flat) — trigger stands: a future P10/I01 run or
+  reload-latency metric showing stall reopens this.
 
 ### I06 — Throttle map can grow past its cap [LOW]
 
@@ -1112,6 +1237,67 @@ until their U03 probes land.
 
 ---
 
+## F10 — U04/U05 follow-up findings (filed 2026-11-04, fixed same day)
+
+### B19 — Live-judge caps silently ignored without `--judges` [MEDIUM]
+
+- **Problem**: `--sample-rate`/`--max-calls`/`--max-spend-usd` are
+  parsed and validated, then ignored unless `--judges` is also
+  passed — a bare `--judge-backend baseten --max-calls 10` runs a
+  full uncapped live rebuild. Docs promise caps on every live run.
+- **Evidence**: `crates/catalog/src/bin/catalog-process.rs:181-191`
+  (`entry.is_some()` gates both `select_endpoints` and
+  `plan_live_calls`); docs `docs/operations.md:156-166`.
+- **Fix**: apply policy whenever live: always `select_endpoints`;
+  always `plan_live_calls` with an uncosted entry when no catalog
+  (max_calls enforced, spend cap fails closed on unknown cost —
+  the existing `plan_live_calls` semantics).
+- **Accept**: CLI probe: `--sample-rate 0` live run judges 0 with no
+  network; `--max-calls 1` on 4 endpoints fails closed pre-write.
+- **Files**: `crates/catalog/src/bin/catalog-process.rs`,
+  `crates/catalog/tests/process_cli.rs`. **Size: S.**
+
+### B20 — Judge sampling ignores endpoint tag [LOW]
+
+- **Problem**: `sampled()` hashes only `(model_id, provider)`, so
+  same-provider tag variants (e.g. `openai` vs `openai/flex`) always
+  sample together — the "deterministic per endpoint" doc claim is
+  wrong. (Hashing the DB `id` instead would break determinism
+  across rebuilds: re-sync reassigns ids.)
+- **Evidence**: `crates/catalog/src/judge_catalog.rs:356-374`.
+- **Fix**: chain the stable `endpoint_tag` into the FNV hash.
+- **Accept**: unit test: same pair, different tags, split at some
+  rate in (0, 1); same input re-samples identically.
+- **Files**: `crates/catalog/src/judge_catalog.rs`. **Size: S.**
+
+### B21 — Catalog modal base_url needs `/v1`, env path adds it [LOW]
+
+- **Problem**: `ModalJudge::from_env` appends `/v1` via `api_root`,
+  but `build_judge` passes catalog `base_url` through verbatim — a
+  catalog entry mirroring `MODAL_JUDGE_URL` (deployment root) 404s
+  mid-rebuild. Loud failure, DB-safe (C05 transaction), still a
+  footgun.
+- **Evidence**: `crates/catalog/src/judge_catalog.rs:474-482` vs
+  `crates/catalog/src/judge_modal.rs:44-54`.
+- **Fix**: apply `api_root` in `build_judge` (idempotent for
+  `/v1`-suffixed entries; make it `pub(crate)`).
+- **Accept**: existing `api_root` unit test + full suite; catalog
+  root-style and suffixed URLs both normalize.
+- **Files**: `crates/catalog/src/judge_catalog.rs`,
+  `crates/catalog/src/judge_modal.rs`. **Size: S.**
+
+### B22 — Metrics render omits the decisions route [MEDIUM-LOW]
+
+- **Problem**: `Route::Decisions` is observed into slot 6 but both
+  `render()` loops list only the six older routes — decisions
+  traffic is counted and never exported.
+- **Evidence**: `crates/gateway/src/metrics.rs:409-416`,
+  `metrics.rs:437-444` vs `metrics.rs:29,68`.
+- **Fix**: add `Route::Decisions` to both loops.
+- **Accept**: unit test: observe decisions + render contains
+  `route="decisions"` request and latency series.
+- **Files**: `crates/gateway/src/metrics.rs`. **Size: S.**
+
 ## Appendix — decision log (fill in as Qs are answered)
 
 Copy this table; one row per answered Q. Keeps the next agent from
@@ -1119,6 +1305,12 @@ re-asking. Delete nothing; supersede by adding a row.
 
 | Q | Task(s) | Answer (A/B/C) | Date | Commit |
 |---|---|---|---|---|
+| Q03 | C01, S06 | A (permit in stream state) | 2026-11-04 | |
+| Q02 | B08, P12 | A (max-expiry + nulls-last) | 2026-11-04 | |
+| Q11 | B17 | A (fail on 0 or >50% skipped) | 2026-11-04 | |
+| Q08 | S01 | custom: BYOK-only classifier key (caller Authorization; optional `x-pennyrouter-classifier-key` header override); CLASSIFIER_API_KEY removed, no stored key ever | 2026-11-04 | |
+| Q12 | B18 | A (reject over-age rankings) | 2026-11-04 | |
+| Q01 | B16 | A (strict 400 model_not_provided) | 2026-11-04 | |
 | Q01 | B16 | | | |
 | Q02 | B08, P12 | | | |
 | Q03 | C01, S06 | | | |

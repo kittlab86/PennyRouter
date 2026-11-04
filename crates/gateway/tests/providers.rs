@@ -259,15 +259,23 @@ async fn v1_suffixed_pinned_base_does_not_double_the_path() {
 }
 
 #[tokio::test]
-async fn empty_remainder_is_not_a_pinned_route() {
+async fn empty_remainder_fails_closed() {
+    // B16/Q01-A: `modal/` (or whitespace) with no model fails closed
+    // with 400 `model_not_provided` — never proxied untouched.
     let default = Arc::new(Mutex::new(Seen::default()));
     let a = spawn_mock(default.clone()).await;
     let gw = spawn_gateway(a, &[]).await;
 
-    // `modal/` with no model passes through untouched (no router).
-    let res = post_model(gw, "/v1/chat/completions", r#"{"model":"modal/"}"#).await;
-    assert_eq!(res.status(), StatusCode::OK);
-    let default = default.lock().unwrap();
-    assert_eq!(default.hits, 1);
-    assert_eq!(default.models, vec!["modal/".to_string()]);
+    for model in ["modal/", "baseten/", "modal/ "] {
+        let res = post_model(
+            gw,
+            "/v1/chat/completions",
+            &format!(r#"{{"model":"{model}"}}"#),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "model {model:?}");
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "model_not_provided");
+    }
+    assert_eq!(default.lock().unwrap().hits, 0, "nothing reaches upstream");
 }

@@ -90,6 +90,25 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     })
 }
 
+/// B17/Q11-A publish gate: refuse to publish a gutted catalog — zero
+/// models, or more than half the endpoint inputs skipped. Thresholds
+/// are constants, not env knobs.
+fn check_publish_gate(
+    model_count: usize,
+    skipped: usize,
+    endpoint_inputs: usize,
+) -> Result<(), String> {
+    if model_count == 0 {
+        return Err("refusing to publish: no models synced".to_string());
+    }
+    if endpoint_inputs > 0 && skipped * 2 > endpoint_inputs {
+        return Err(format!(
+            "refusing to publish: {skipped} of {endpoint_inputs} endpoint inputs skipped (>50%)"
+        ));
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let argv: Vec<String> = std::env::args().collect();
     let args = parse_args(&argv).map_err(|e| {
@@ -105,7 +124,7 @@ fn run() -> Result<(), String> {
     // EXTRA_MODEL_IDS (comma-separated, Iter 24) nominates ids the
     // models list omits (e.g. non-text-output scoring models) for an
     // individual endpoints fetch each.
-    let (models_json, endpoints) = if args.fetch_openrouter {
+    let (models_json, endpoints, fetch_skipped) = if args.fetch_openrouter {
         let base = std::env::var("OPENROUTER_BASE_URL")
             .unwrap_or_else(|_| "https://openrouter.ai/api".to_string());
         let extra_ids: Vec<String> = std::env::var("EXTRA_MODEL_IDS")
@@ -120,14 +139,15 @@ fn run() -> Result<(), String> {
         if !fetched.skipped.is_empty() {
             println!("skipped {} models without endpoints", fetched.skipped.len());
         }
-        (fetched.models, fetched.endpoints)
+        let skipped = fetched.skipped.len();
+        (fetched.models, fetched.endpoints, skipped)
     } else {
         let models_path = args.models.as_ref().expect("validated above");
         let endpoints_path = args.endpoints_dir.as_ref().expect("validated above");
         let models_json =
             fs::read(models_path).map_err(|e| format!("read {}: {e}", models_path.display()))?;
         let endpoints = load_endpoints_dir(endpoints_path).map_err(|e| e.to_string())?;
-        (models_json, endpoints)
+        (models_json, endpoints, 0)
     };
     fs::create_dir_all(&args.out).map_err(|e| format!("create {}: {e}", args.out.display()))?;
 
@@ -144,6 +164,18 @@ fn run() -> Result<(), String> {
         &fetched_at,
     )
     .map_err(|e| e.to_string())?;
+    // B17/Q11-A publish gate: refuse a gutted catalog (zero models, or
+    // more than half the endpoint inputs skipped) before process and
+    // publish, so last-good keeps serving and no work DB is left behind.
+    let skipped = fetch_skipped + summary.skipped.len();
+    if let Err(gate) = check_publish_gate(
+        summary.model_count,
+        skipped,
+        endpoints.len() + fetch_skipped,
+    ) {
+        let _ = fs::remove_file(&work_db);
+        return Err(gate);
+    }
     if args.process {
         run_processing(&catalog, &fetched_at).map_err(|e| e.to_string())?;
     }

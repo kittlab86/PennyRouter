@@ -49,7 +49,10 @@ pub fn fetch_openrouter_extra(base_url: &str, extra_ids: &[String]) -> Result<Fe
     let mut skipped = Vec::new();
     for id in &ids {
         match get_bytes(&client, &format!("{base}/v1/models/{id}/endpoints")) {
-            Ok(body) => endpoints.push((id.clone(), body)),
+            Ok(body) => match parse_endpoints_body(&body, id, false) {
+                Some(_) => endpoints.push((id.clone(), body)),
+                None => skipped.push(id.clone()),
+            },
             Err(_) => skipped.push(id.clone()),
         }
     }
@@ -60,24 +63,30 @@ pub fn fetch_openrouter_extra(base_url: &str, extra_ids: &[String]) -> Result<Fe
         match get_bytes(&client, &format!("{base}/v1/models/{id}/endpoints")) {
             Ok(body) => {
                 // The model row must exist before its endpoints (foreign
-                // key): keep the pair only when the body carries both.
-                let mut stored = false;
-                if let Ok(extra) = serde_json::from_slice::<Value>(&body) {
-                    if let Some(object) = extra.get("data") {
-                        let mut model = object.clone();
-                        if let Some(map) = model.as_object_mut() {
-                            map.remove("endpoints");
+                // key): keep the pair only when the body carries this
+                // model's id plus an endpoints array. Anything else
+                // would abort the whole sync downstream, so it lands
+                // in `skipped` like a failed fetch.
+                match parse_endpoints_body(&body, id, true) {
+                    None => skipped.push(id.clone()),
+                    Some(extra) => {
+                        let mut stored = false;
+                        if let Some(object) = extra.get("data") {
+                            let mut model = object.clone();
+                            if let Some(map) = model.as_object_mut() {
+                                map.remove("endpoints");
+                            }
+                            if let Some(list) = root.get_mut("data").and_then(Value::as_array_mut) {
+                                list.push(model);
+                                stored = true;
+                            }
                         }
-                        if let Some(list) = root.get_mut("data").and_then(Value::as_array_mut) {
-                            list.push(model);
-                            stored = true;
+                        if stored {
+                            endpoints.push((id.clone(), body));
+                        } else {
+                            skipped.push(id.clone());
                         }
                     }
-                }
-                if stored {
-                    endpoints.push((id.clone(), body));
-                } else {
-                    skipped.push(id.clone());
                 }
             }
             Err(_) => skipped.push(id.clone()),
@@ -90,6 +99,24 @@ pub fn fetch_openrouter_extra(base_url: &str, extra_ids: &[String]) -> Result<Fe
         endpoints,
         skipped,
     })
+}
+
+/// Parse one endpoints body for sync input: it must be JSON with a
+/// `data.endpoints` array (sync aborts the whole cycle otherwise),
+/// and the carried model id — when present — must equal the requested
+/// id, or foreign endpoints would file under this model. Extras
+/// additionally require the id (`require_id`): their model row joins
+/// the models array under that id, so a missing or wrong id breaks
+/// the foreign key downstream.
+fn parse_endpoints_body(body: &[u8], requested_id: &str, require_id: bool) -> Option<Value> {
+    let root: Value = serde_json::from_slice(body).ok()?;
+    let data = root.get("data")?;
+    data.get("endpoints")?.as_array()?;
+    match data.get("id").and_then(Value::as_str) {
+        Some(id) if id == requested_id => Some(root),
+        None if !require_id => Some(root),
+        _ => None,
+    }
 }
 
 fn get_bytes(client: &reqwest::blocking::Client, url: &str) -> Result<Vec<u8>, Error> {

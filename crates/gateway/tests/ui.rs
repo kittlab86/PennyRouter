@@ -52,6 +52,7 @@ fn scratch_db(test: &str) -> std::path::PathBuf {
             judged_at: Some("t".to_string()),
             judge_model: Some("recorded".to_string()),
             judge_prompt: Some("recorded".to_string()),
+            price_override_tokens: None,
         })
         .unwrap();
     drop(catalog);
@@ -143,6 +144,62 @@ async fn ui_enabled_shows_ranking_and_metrics() {
     assert!(body.contains("openrouter/pair/low"), "menu listed");
     assert!(body.contains("Metrics"), "metrics section present");
     assert!(body.contains("pennyrouter_"), "metrics text embedded");
+}
+
+#[tokio::test]
+async fn ui_flag_truthy_variants() {
+    // I10(a): `true`/`yes` (any case) register /ui like `1`; anything
+    // else falls through to the fallback proxy.
+    let _guard = lock_env().await;
+    for value in ["true", "TRUE", "yes", "YES"] {
+        std::env::set_var("GATEWAY_UI", value);
+        let (mock, seen) = spawn_mock().await;
+        let state = pennyrouter_gateway::AppState::new(format!("http://{mock}"));
+        let app = pennyrouter_gateway::app_with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gw = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let res = client()
+            .get(format!("http://{gw}/ui"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        assert!(
+            res.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .contains("text/html"),
+            "GATEWAY_UI={value} registers /ui"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "GATEWAY_UI={value} serves locally, not proxied"
+        );
+    }
+    for value in ["0", "false", "no"] {
+        std::env::set_var("GATEWAY_UI", value);
+        let (mock, seen) = spawn_mock().await;
+        let state = pennyrouter_gateway::AppState::new(format!("http://{mock}"));
+        let app = pennyrouter_gateway::app_with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gw = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let res = client()
+            .get(format!("http://{gw}/ui"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "GATEWAY_UI={value} falls through to fallback"
+        );
+    }
+    std::env::remove_var("GATEWAY_UI");
 }
 
 #[tokio::test]
@@ -274,6 +331,7 @@ fn preview_db_inner(test: &str, cheap_price: f64, _tag: &str) -> std::path::Path
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let row_id = catalog.endpoints_for(model_id).unwrap().last().unwrap().id;
@@ -290,6 +348,7 @@ fn preview_db_inner(test: &str, cheap_price: f64, _tag: &str) -> std::path::Path
                     processed_at: "t".to_string(),
                     supports_tools: tools,
                     supports_decisions: decisions,
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
@@ -642,4 +701,8 @@ async fn ui_page_contains_inspector() {
     assert!(body.contains("inspector-model"), "custom box");
     assert!(body.contains("openrouter/pair/low"), "fixed id listed");
     assert!(body.contains("session hash"), "hash explained");
+    assert!(
+        body.contains("Plain-request view"),
+        "plain-request caveat shown"
+    );
 }

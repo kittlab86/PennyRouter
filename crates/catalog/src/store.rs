@@ -34,6 +34,7 @@ pub struct EndpointRow {
     pub judged_at: Option<String>,
     pub judge_model: Option<String>,
     pub judge_prompt: Option<String>,
+    pub price_override_tokens: Option<i64>,
 }
 
 /// Indexed values distilled from an endpoint payload by processing.
@@ -47,6 +48,7 @@ pub struct EndpointIndex {
     pub processed_at: String,
     pub supports_tools: Option<i64>,
     pub supports_decisions: Option<i64>,
+    pub price_override_tokens: Option<i64>,
 }
 
 /// Model-judged signals distilled by judging (Phase 2b), plus the
@@ -64,7 +66,8 @@ pub struct EndpointJudgment {
 const ENDPOINT_COLS: &str = "id, model_id, provider_name, payload, fetched_at,
     price_prompt, price_completion, price_cache_read, price_cache_write,
     precision_class, promo_discount, processed_at, supports_tools,
-    supports_decisions, quality_tier, quality_score, judged_at, judge_model, judge_prompt";
+    supports_decisions, quality_tier, quality_score, judged_at, judge_model, judge_prompt,
+    price_override_tokens";
 
 fn endpoint_row(r: &Row) -> Result<EndpointRow, rusqlite::Error> {
     Ok(EndpointRow {
@@ -87,6 +90,7 @@ fn endpoint_row(r: &Row) -> Result<EndpointRow, rusqlite::Error> {
         judged_at: r.get(16)?,
         judge_model: r.get(17)?,
         judge_prompt: r.get(18)?,
+        price_override_tokens: r.get(19)?,
     })
 }
 
@@ -103,10 +107,70 @@ impl Catalog {
 
     /// Open an existing DB read-only: never creates, migrates, or locks
     /// for writing. The gateway serving path uses this against the
-    /// shared artifact.
+    /// shared artifact. Fails closed when the schema is missing,
+    /// uninitialized, or not exactly the current version — a
+    /// read-only handle cannot migrate, so anything older would
+    /// break queries with confusing errors later.
     pub fn open_read_only(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        Ok(Self { conn })
+        let catalog = Self { conn };
+        catalog.check_schema()?;
+        Ok(catalog)
+    }
+
+    /// Read-only schema gate: same tables and version `init` would
+    /// produce, but without writing anything.
+    fn check_schema(&self) -> Result<(), Error> {
+        for table in ["models", "endpoints", "sync_meta"] {
+            let present: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            if !present {
+                return Err(Error::Schema(format!(
+                    "db is missing table {table:?}: not a catalog database"
+                )));
+            }
+        }
+        let stored = self.get_meta("schema_version")?;
+        let version: u32 = match stored {
+            Some(value) => value.parse().map_err(|_| {
+                Error::Schema(format!(
+                    "unparseable schema_version in sync_meta: {value:?}"
+                ))
+            })?,
+            None => {
+                return Err(Error::Schema(
+                    "db has no schema_version: not an initialized catalog".to_string(),
+                ))
+            }
+        };
+        if version != SCHEMA_VERSION {
+            return Err(Error::Schema(format!(
+                "db schema v{version} does not match this binary (v{SCHEMA_VERSION})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Run `f` inside one SQLite transaction (BEGIN IMMEDIATE):
+    /// commit on `Ok`, roll back on `Err`. Raw SQL rather than
+    /// `rusqlite::Transaction` so callers keep `&self` (the handle
+    /// never needs `&mut`). Callers must not nest: `f` may only run
+    /// plain statements, never another `transaction` call.
+    pub fn transaction<T>(&self, f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match f() {
+            Ok(value) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Create tables if missing, migrate older DBs, record the schema
@@ -192,13 +256,30 @@ impl Catalog {
         Ok(())
     }
 
+    /// Drop one model row. Callers delete its endpoints first: the
+    /// foreign key has no cascade.
+    pub fn delete_model(&self, model_id: &str) -> Result<(), Error> {
+        self.conn
+            .execute("DELETE FROM models WHERE model_id = ?1", params![model_id])?;
+        Ok(())
+    }
+
+    /// Every stored model id, for re-sync pruning.
+    pub fn all_model_ids(&self) -> Result<Vec<String>, Error> {
+        let mut stmt = self.conn.prepare("SELECT model_id FROM models")?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+
     /// Fill the indexed columns of one endpoint, leaving the payload alone.
     pub fn update_endpoint_index(&self, id: i64, index: &EndpointIndex) -> Result<(), Error> {
         self.conn.execute(
             "UPDATE endpoints SET price_prompt = ?1, price_completion = ?2,
              price_cache_read = ?3, price_cache_write = ?4, precision_class = ?5,
              promo_discount = ?6, processed_at = ?7, supports_tools = ?8,
-             supports_decisions = ?9 WHERE id = ?10",
+             supports_decisions = ?9, price_override_tokens = ?10 WHERE id = ?11",
             params![
                 index.price_prompt,
                 index.price_completion,
@@ -209,6 +290,7 @@ impl Catalog {
                 index.processed_at,
                 index.supports_tools,
                 index.supports_decisions,
+                index.price_override_tokens,
                 id
             ],
         )?;
@@ -331,6 +413,58 @@ mod tests {
             Some("5")
         );
         assert_eq!(catalog.counts().unwrap(), (0, 0));
+    }
+
+    fn temp_db(name: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "pennyrouter-b13-{name}-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn read_only_rejects_missing_schema() {
+        let path = temp_db("missing");
+        drop(Catalog::open(&path).unwrap()); // creates the file, no init
+        let err = match Catalog::open_read_only(&path) {
+            Ok(_) => panic!("expected schema rejection"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, Error::Schema(_)), "unexpected: {err:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_only_rejects_newer_schema() {
+        let path = temp_db("newer");
+        let catalog = Catalog::open(&path).unwrap();
+        catalog.init().unwrap();
+        catalog.set_meta("schema_version", "999").unwrap();
+        drop(catalog);
+        let err = match Catalog::open_read_only(&path) {
+            Ok(_) => panic!("expected schema rejection"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, Error::Schema(_)), "unexpected: {err:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_only_accepts_current_schema() {
+        let path = temp_db("current");
+        let catalog = Catalog::open(&path).unwrap();
+        catalog.init().unwrap();
+        drop(catalog);
+        let ro = Catalog::open_read_only(&path).unwrap();
+        assert_eq!(ro.counts().unwrap(), (0, 0));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

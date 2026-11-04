@@ -56,6 +56,7 @@ fn build_db(path: &std::path::Path) {
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let id = catalog.endpoints_for(model).unwrap()[0].id;
@@ -72,6 +73,7 @@ fn build_db(path: &std::path::Path) {
                     processed_at: "t".to_string(),
                     supports_tools: None,
                     supports_decisions: None,
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
@@ -367,6 +369,7 @@ async fn throttled_providers_are_avoided_and_counted() {
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let id = catalog.endpoints_for("m/mid").unwrap()[0].id;
@@ -383,6 +386,7 @@ async fn throttled_providers_are_avoided_and_counted() {
                     processed_at: "t".to_string(),
                     supports_tools: None,
                     supports_decisions: None,
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
@@ -626,6 +630,7 @@ async fn free_tier_fails_over_on_throttle() {
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let id = catalog.endpoints_for("m/free2").unwrap()[0].id;
@@ -642,6 +647,7 @@ async fn free_tier_fails_over_on_throttle() {
                     processed_at: "t".to_string(),
                     supports_tools: None,
                     supports_decisions: None,
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
@@ -683,6 +689,191 @@ async fn free_fallback_serves_paid_after_free_429() {
     );
     let guard = seen.lock().unwrap();
     assert_eq!(guard.hits.get("Freebie"), Some(&1));
+    assert_eq!(guard.hits.get("Cheap"), Some(&1));
+    assert_eq!(guard.models.get("Cheap").unwrap(), "m/cheap");
+}
+
+/// I10(d): the fallback dispatch serves every tier target, not just
+/// `low` — think (best quality), lowest (cheapest paid), decision
+/// (decisions-capable only).
+#[tokio::test]
+async fn free_fallback_serves_each_tier_target() {
+    let db = scratch_db("free-fallback-tiers");
+    build_db(&db);
+    // Decisions-capable paid offering for the `decision` target.
+    {
+        let catalog = Catalog::open(&db).unwrap();
+        catalog
+            .insert_model(&ModelRow {
+                model_id: "m/score".to_string(),
+                name: "m/score".to_string(),
+                source: "test".to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+            })
+            .unwrap();
+        catalog
+            .insert_endpoint(&EndpointRow {
+                id: 0,
+                model_id: "m/score".to_string(),
+                provider_name: "Decider".to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+                price_prompt: None,
+                price_completion: None,
+                price_cache_read: None,
+                price_cache_write: None,
+                precision_class: None,
+                promo_discount: None,
+                processed_at: None,
+                supports_tools: None,
+                supports_decisions: None,
+                quality_tier: None,
+                quality_score: None,
+                judged_at: None,
+                judge_model: None,
+                judge_prompt: None,
+                price_override_tokens: None,
+            })
+            .unwrap();
+        let id = catalog.endpoints_for("m/score").unwrap()[0].id;
+        catalog
+            .update_endpoint_index(
+                id,
+                &EndpointIndex {
+                    price_prompt: Some(2.0),
+                    price_completion: Some(2.0),
+                    price_cache_read: None,
+                    price_cache_write: None,
+                    precision_class: Some("fp16".to_string()),
+                    promo_discount: None,
+                    processed_at: "t".to_string(),
+                    supports_tools: None,
+                    supports_decisions: Some(1),
+                    price_override_tokens: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .update_endpoint_judgment(
+                id,
+                &EndpointJudgment {
+                    quality_tier: Some("standard".to_string()),
+                    quality_score: None,
+                    judged_at: "t".to_string(),
+                    judge_model: None,
+                    judge_prompt: None,
+                },
+            )
+            .unwrap();
+    }
+    let seen = Arc::new(Mutex::new(Upstream::default()));
+    let mock = spawn_mock(mock_app(seen.clone(), vec!["Freebie"], vec![])).await;
+    let gw = spawn_gateway(mock, &db).await;
+
+    // Distinct model ids pin under distinct session namespaces, so
+    // each POST below takes its own fresh fallback pick.
+    for (target, provider, model) in [
+        ("think", "Dear", "m/dear"),
+        ("lowest", "Cheap", "m/cheap"),
+        ("decision", "Decider", "m/score"),
+    ] {
+        let res = post_chat(gw, &format!("openrouter/pair/free/fallback/{target}")).await;
+        assert_eq!(res.status(), StatusCode::OK, "target {target}");
+        assert_eq!(
+            res.headers().get("x-pennyrouter-provider").unwrap(),
+            provider,
+            "target {target}"
+        );
+        let guard = seen.lock().unwrap();
+        assert_eq!(
+            guard.models.get(provider).map(String::as_str),
+            Some(model),
+            "target {target}"
+        );
+    }
+    let guard = seen.lock().unwrap();
+    assert_eq!(guard.hits.get("Freebie"), Some(&3));
+    assert_eq!(guard.hits.get("Dear"), Some(&1));
+    assert_eq!(guard.hits.get("Cheap"), Some(&1));
+    assert_eq!(guard.hits.get("Decider"), Some(&1));
+}
+
+/// B04 probe: when the free attempt AND its retry both 429, the
+/// configured `/fallback/<tier>` must still serve — the retry leg
+/// must fall through to the fallback leg instead of returning.
+#[tokio::test]
+async fn free_fallback_serves_paid_after_retry_also_429s() {
+    let db = scratch_db("free-fallback-retry");
+    build_db(&db);
+    // Second free offering so a retry leg exists to fail.
+    {
+        let catalog = Catalog::open(&db).unwrap();
+        catalog
+            .insert_model(&ModelRow {
+                model_id: "m/free2".to_string(),
+                name: "m/free2".to_string(),
+                source: "test".to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+            })
+            .unwrap();
+        catalog
+            .insert_endpoint(&EndpointRow {
+                id: 0,
+                model_id: "m/free2".to_string(),
+                provider_name: "Free2".to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+                price_prompt: None,
+                price_completion: None,
+                price_cache_read: None,
+                price_cache_write: None,
+                precision_class: None,
+                promo_discount: None,
+                processed_at: None,
+                supports_tools: None,
+                supports_decisions: None,
+                quality_tier: None,
+                quality_score: None,
+                judged_at: None,
+                judge_model: None,
+                judge_prompt: None,
+                price_override_tokens: None,
+            })
+            .unwrap();
+        let id = catalog.endpoints_for("m/free2").unwrap()[0].id;
+        catalog
+            .update_endpoint_index(
+                id,
+                &EndpointIndex {
+                    price_prompt: Some(0.0),
+                    price_completion: Some(0.0),
+                    price_cache_read: None,
+                    price_cache_write: None,
+                    precision_class: Some("fp16".to_string()),
+                    promo_discount: None,
+                    processed_at: "t".to_string(),
+                    supports_tools: None,
+                    supports_decisions: None,
+                    price_override_tokens: None,
+                },
+            )
+            .unwrap();
+    }
+    let seen = Arc::new(Mutex::new(Upstream::default()));
+    let mock = spawn_mock(mock_app(seen.clone(), vec!["Freebie", "Free2"], vec![])).await;
+    let gw = spawn_gateway(mock, &db).await;
+
+    let res = post_chat(gw, "openrouter/pair/free/fallback/low").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("x-pennyrouter-provider").unwrap(),
+        "Cheap"
+    );
+    let guard = seen.lock().unwrap();
+    assert_eq!(guard.hits.get("Freebie"), Some(&1));
+    assert_eq!(guard.hits.get("Free2"), Some(&1));
     assert_eq!(guard.hits.get("Cheap"), Some(&1));
     assert_eq!(guard.models.get("Cheap").unwrap(), "m/cheap");
 }
@@ -796,6 +987,7 @@ fn build_tools_db(path: &std::path::Path, with_capable: bool) {
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let id = catalog
@@ -818,6 +1010,7 @@ fn build_tools_db(path: &std::path::Path, with_capable: bool) {
                     processed_at: "t".to_string(),
                     supports_tools: Some(i64::from(supports)),
                     supports_decisions: None,
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
@@ -949,6 +1142,7 @@ fn build_decision_db(path: &std::path::Path, with_capable: bool, with_paid: bool
                 judged_at: None,
                 judge_model: None,
                 judge_prompt: None,
+                price_override_tokens: None,
             })
             .unwrap();
         let id = catalog
@@ -971,6 +1165,7 @@ fn build_decision_db(path: &std::path::Path, with_capable: bool, with_paid: bool
                     processed_at: "t".to_string(),
                     supports_tools: None,
                     supports_decisions: Some(i64::from(decisions)),
+                    price_override_tokens: None,
                 },
             )
             .unwrap();
@@ -989,4 +1184,164 @@ fn build_decision_db(path: &std::path::Path, with_capable: bool, with_paid: bool
                 .unwrap();
         }
     }
+}
+
+/// Q13-C fixture: one model, two providers. `Cap` is cheaper (1.0)
+/// but bills its override tier at/above 1000 input tokens; `Flat`
+/// (2.0) has no tier. Both fp16/low.
+fn build_threshold_db(path: &std::path::Path, cap_flat_too: bool) {
+    let _ = std::fs::remove_file(path);
+    let catalog = Catalog::open(path).unwrap();
+    catalog.init().unwrap();
+    catalog
+        .insert_model(&ModelRow {
+            model_id: "m/capped".to_string(),
+            name: "m/capped".to_string(),
+            source: "test".to_string(),
+            payload: "{}".to_string(),
+            fetched_at: "t".to_string(),
+        })
+        .unwrap();
+    for (provider, price, threshold) in [
+        ("Cap", 1.0, Some(1000_i64)),
+        ("Flat", 2.0, cap_flat_too.then_some(500_i64)),
+    ] {
+        catalog
+            .insert_endpoint(&EndpointRow {
+                id: 0,
+                model_id: "m/capped".to_string(),
+                provider_name: provider.to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+                price_prompt: None,
+                price_completion: None,
+                price_cache_read: None,
+                price_cache_write: None,
+                precision_class: None,
+                promo_discount: None,
+                processed_at: None,
+                supports_tools: None,
+                supports_decisions: None,
+                quality_tier: None,
+                quality_score: None,
+                judged_at: None,
+                judge_model: None,
+                judge_prompt: None,
+                price_override_tokens: None,
+            })
+            .unwrap();
+        let id = catalog
+            .endpoints_for("m/capped")
+            .unwrap()
+            .iter()
+            .find(|e| e.provider_name == provider)
+            .unwrap()
+            .id;
+        catalog
+            .update_endpoint_index(
+                id,
+                &EndpointIndex {
+                    price_prompt: Some(price),
+                    price_completion: Some(price),
+                    price_cache_read: None,
+                    price_cache_write: None,
+                    precision_class: Some("fp16".to_string()),
+                    promo_discount: None,
+                    processed_at: "t".to_string(),
+                    supports_tools: None,
+                    supports_decisions: None,
+                    price_override_tokens: threshold,
+                },
+            )
+            .unwrap();
+        catalog
+            .update_endpoint_judgment(
+                id,
+                &EndpointJudgment {
+                    quality_tier: Some("low".to_string()),
+                    quality_score: None,
+                    judged_at: "t".to_string(),
+                    judge_model: None,
+                    judge_prompt: None,
+                },
+            )
+            .unwrap();
+    }
+}
+
+async fn post_chat_body(gw: SocketAddr, model: &str, content: &str) -> reqwest::Response {
+    client()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .header("authorization", API_KEY)
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({"model": model, "messages": [{"role": "user", "content": content}]})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap()
+}
+
+fn serving_provider(res: &reqwest::Response) -> String {
+    res.headers()
+        .get("x-pennyrouter-provider")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn provider_hits(seen: &Arc<Mutex<Upstream>>, provider: &str) -> u64 {
+    seen.lock()
+        .unwrap()
+        .hits
+        .get(provider)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Q13-C: a small request serves the cheapest pick; a long one skips
+/// the capped offering instead of silently billing its override tier.
+#[tokio::test]
+async fn over_threshold_request_skips_capped_offering() {
+    let db = scratch_db("threshold-skip");
+    build_threshold_db(&db, false);
+    let seen = Arc::new(Mutex::new(Upstream::default()));
+    let mock = spawn_mock(mock_app(seen.clone(), vec![], vec![])).await;
+    let gw = spawn_gateway(mock, &db).await;
+
+    let small = post_chat_body(gw, "openrouter/pair/low", "hi").await;
+    assert_eq!(small.status(), StatusCode::OK);
+    assert_eq!(serving_provider(&small), "Cap");
+    assert_eq!(provider_hits(&seen, "Cap"), 1);
+
+    // 8000 chars ≈ 2000 tokens ≥ Cap's 1000-token tier: Cap is
+    // skipped (the sticky pin from the small request cannot serve
+    // either, so the session re-pins fresh), Flat serves at its
+    // advertised price.
+    let big_text = "x".repeat(8000);
+    let big = post_chat_body(gw, "openrouter/pair/low", &big_text).await;
+    assert_eq!(big.status(), StatusCode::OK);
+    assert_eq!(serving_provider(&big), "Flat");
+    assert_eq!(provider_hits(&seen, "Flat"), 1);
+    assert_eq!(provider_hits(&seen, "Cap"), 1);
+}
+
+/// Q13-C: when every eligible offering would bill its override tier,
+/// the request fails closed instead of billing ~2× silently.
+#[tokio::test]
+async fn all_capped_request_fails_closed() {
+    let db = scratch_db("threshold-closed");
+    build_threshold_db(&db, true);
+    let seen = Arc::new(Mutex::new(Upstream::default()));
+    let mock = spawn_mock(mock_app(seen.clone(), vec![], vec![])).await;
+    let gw = spawn_gateway(mock, &db).await;
+
+    let big_text = "x".repeat(8000);
+    let res = post_chat_body(gw, "openrouter/pair/low", &big_text).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "context_exceeded");
+    assert!(seen.lock().unwrap().hits.is_empty());
 }

@@ -46,6 +46,7 @@ fn add_model(db: &std::path::Path, model_id: &str, provider: &str, prompt_price:
             judged_at: None,
             judge_model: None,
             judge_prompt: None,
+            price_override_tokens: None,
         })
         .unwrap();
     let id = catalog.endpoints_for(model_id).unwrap()[0].id;
@@ -62,6 +63,7 @@ fn add_model(db: &std::path::Path, model_id: &str, provider: &str, prompt_price:
                 processed_at: now_rfc3339().unwrap(),
                 supports_tools: None,
                 supports_decisions: None,
+                price_override_tokens: None,
             },
         )
         .unwrap();
@@ -148,6 +150,73 @@ fn newest_verifying_manifest_wins_over_invalid_newer() {
     );
 }
 
+/// B18/Q12-A: an over-age ranking is rejected — at explicit load and
+/// on reload — so month-old ordering never goes live; last good keeps
+/// serving instead.
+#[test]
+fn stale_ranking_is_rejected_and_keeps_last_good() {
+    use pennyrouter_catalog::{publish, publish_ranking, RankingDocument};
+    use std::collections::BTreeMap;
+
+    // Hermetic staleness bound: ignore any ambient SYNC_INTERVAL.
+    let ambient = std::env::var("SYNC_INTERVAL").ok();
+    std::env::remove_var("SYNC_INTERVAL");
+
+    let doc = |at: &str| RankingDocument {
+        created_at: at.to_string(),
+        // Distinct content per stamp: identical docs share filenames
+        // (I09 idempotent versioning), which would overwrite instead
+        // of coexisting.
+        catalog_version: Some(format!("ranked-at-{at}")),
+        models: BTreeMap::new(),
+        free_offers: BTreeMap::new(),
+    };
+    let (_seed_dir, db) = seed_db("stale-ranking");
+    let out = scratch("stale-ranking-out");
+    publish(&db, &out, "test", 1, 1).unwrap();
+
+    let fresh_stamp = now_rfc3339().unwrap();
+    let (_, fresh_manifest, _) = publish_ranking(&doc(&fresh_stamp), &out).unwrap();
+    let router = Router::load(&out).unwrap();
+    assert_eq!(
+        routes(&router, "test/reload-a").as_deref(),
+        Some("provider-a")
+    );
+    // Explicit load of a stale manifest fails too.
+    let (_, stale_manifest, _) = publish_ranking(&doc("2020-01-01T00:00:00Z"), &out).unwrap();
+    let err = match Router::load_with_ranking(&db, &stale_manifest) {
+        Ok(_) => panic!("stale ranking must fail explicit load"),
+        Err(err) => err,
+    };
+    assert!(
+        err.0.contains("too old"),
+        "stale load must name staleness, got: {}",
+        err.0
+    );
+
+    // Reload with only the stale ranking left: rejected, last good serves.
+    std::fs::remove_file(&fresh_manifest).unwrap();
+    // A newer snapshot is waiting too: the failed reload must swap
+    // nothing at all (Q05 load-before-swap), not even the good part.
+    add_model(&db, "test/reload-b", "provider-b", 0.002);
+    publish(&db, &out, "test", 2, 2).unwrap();
+    assert!(router.reload().is_err(), "stale reload must fail");
+    assert_eq!(
+        routes(&router, "test/reload-a").as_deref(),
+        Some("provider-a"),
+        "last good keeps serving"
+    );
+    assert_eq!(
+        routes(&router, "test/reload-b"),
+        None,
+        "failed reload swaps nothing, not even the fresh snapshot"
+    );
+
+    if let Some(value) = ambient {
+        std::env::set_var("SYNC_INTERVAL", value);
+    }
+}
+
 #[test]
 fn corrupt_db_keeps_last_good_snapshot() {
     let (_dir, db) = seed_db("last-good");
@@ -167,6 +236,28 @@ fn corrupt_db_keeps_last_good_snapshot() {
         Some("provider-a"),
         "last good snapshot keeps serving",
     );
+}
+
+#[tokio::test]
+async fn zero_interval_disables_reload_without_panic() {
+    // C08: `0 disables` must not panic inside `tokio::time::interval`.
+    // The returned handle completes without ever ticking.
+    let dir = scratch("zero-interval");
+    let router = Arc::new(Router::standby(&dir));
+    let metrics = Arc::new(Metrics::new());
+    let task = pennyrouter_gateway::spawn_reload_task(router, Duration::ZERO, metrics.clone());
+    let done = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("zero-interval handle must complete");
+    assert!(done.is_ok(), "zero-interval task must not panic");
+    let rendered = metrics.render();
+    let ticks: u64 = rendered
+        .lines()
+        .filter(|line| line.starts_with("pennyrouter_catalog_reload_total{"))
+        .filter_map(|line| line.rsplit(' ').next())
+        .filter_map(|value| value.parse::<u64>().ok())
+        .sum();
+    assert_eq!(ticks, 0, "zero interval must never tick:\n{rendered}");
 }
 
 #[tokio::test]

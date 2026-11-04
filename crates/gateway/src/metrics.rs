@@ -413,6 +413,7 @@ impl Metrics {
             Route::Ui,
             Route::Metrics,
             Route::Other,
+            Route::Decisions,
         ] {
             let metrics = &self.routes[route.index()];
             let counts = metrics
@@ -441,6 +442,7 @@ impl Metrics {
             Route::Ui,
             Route::Metrics,
             Route::Other,
+            Route::Decisions,
         ] {
             let metrics = &self.routes[route.index()];
             for (bound, bucket) in BUCKETS.iter().zip(metrics.buckets.iter()) {
@@ -605,7 +607,7 @@ impl Drop for OwnedInFlightGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::Route;
+    use super::{Metrics, Route};
 
     /// Native aliases share the routed slots (Iter 25): observability
     /// stays intact, no new label cardinality.
@@ -618,5 +620,22 @@ mod tests {
         // Decisions alias (Iter 27 follow-up) shares its slot too.
         assert_eq!(Route::from_path("/api/v1/decisions"), Route::Decisions);
         assert_eq!(Route::from_path("/v1/decisions"), Route::Decisions);
+    }
+
+    /// B22: observed decisions traffic renders its request and
+    /// latency series — counted but never exported is a silent hole.
+    #[test]
+    fn decisions_route_renders() {
+        let metrics = Metrics::new();
+        metrics.observe(Route::Decisions, 200, std::time::Duration::from_millis(5));
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("pennyrouter_requests_total{route=\"decisions\",status=\"200\"} 1"),
+            "missing decisions request series"
+        );
+        assert!(
+            rendered.contains("pennyrouter_request_latency_seconds_count{route=\"decisions\"} 1"),
+            "missing decisions latency series"
+        );
     }
 }

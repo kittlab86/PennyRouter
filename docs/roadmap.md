@@ -201,8 +201,9 @@ Development delivers Docker images, platform delivers deployments.
   `pennyrouter_catalog_reload_total{result="ok|error"}`. `cargo test`
   (84 passed), clippy clean, fmt clean; new `tests/reload.rs`
   (new-model pickup, corrupt-DB last-good, background publish).
-  Note: `CATALOG_DB` in prod compose/Terraform left for the platform
-  track — the gateway side honors it whenever set.
+  Note: `CATALOG_DB` in Terraform left for the platform
+  track — the gateway side honors it whenever set, and prod compose
+  now mounts `CATALOG_DB=/catalog` (Q14-A).
 
 ## Iter 11 — Bug-review fixes (done)
 
@@ -269,15 +270,22 @@ Development delivers Docker images, platform delivers deployments.
   +0.22ms, p99 +4.15ms; 0 errors on all sides; no sheds, no guard
   rejections. p50 matches Iter 3 exactly, so the typical path did not
   regress; the p99 tail is open investigation, not a verdict.
+- Confirmation N=5 (2026-11-04, Q17, same params, current tree):
+  `tests/load/results/compare-20261104T14*` r1–r5. json overhead
+  median p50 +0.28ms / p99 +0.43ms; sse median p50 +0.20ms / p99
+  +0.11ms; 0 errors in all 10 phases; gateway peak RSS 15.0–15.5 MiB
+  under 20-session load (far inside the 1 GB profile). The +13.10ms
+  spike was variance — bug-todo P0 closed, no latency iteration.
 
 ## Iter 13 — Virtual model catalog, free-first (done)
 
-- Goal: serve six virtual models and nothing else. Ids carry the
-  provider first so future providers slot in (today only OpenRouter,
-  BYOK key forwarded as now): `openrouter/pair/free`,
-  `openrouter/pair/low`, `openrouter/pair/think`,
-  `openrouter/pair/privacy/free`, `openrouter/pair/privacy/low`,
-  `openrouter/pair/privacy/think`.
+- Goal: serve the curated virtual-model menu and nothing else (six
+  at the time; fourteen curated ids + pinned-model/fallback forms
+  today). Ids carry the provider first so future providers slot in
+  (today only OpenRouter, BYOK key forwarded as now):
+  `openrouter/pair/free`, `openrouter/pair/low`,
+  `openrouter/pair/think`, `openrouter/pair/privacy/free`,
+  `openrouter/pair/privacy/low`, `openrouter/pair/privacy/think`.
 - Tiers: `free` = zero-cost offering; `low` = cheapest basic
   (cheapest effective cost across models); `think` = best quality
   signals across models. No speed/latency axis in v1.
@@ -290,15 +298,15 @@ Development delivers Docker images, platform delivers deployments.
   false (gateway-owned failover, no upstream surprise). For `free`
   (and all virtual picks), organic 429 history steers around
   throttled providers (60s cool-down) with availability fallback.
-- `GET /v1/models` answers locally with exactly the six curated
-  entries (no upstream proxy leak); chat with a virtual id routes to a
-  real backend offering. See [api.md](api.md), [routing.md](routing.md),
-  [pricing.md](pricing.md).
-- Value: clients see a stable 6-model menu; the gateway owns mapping,
-  price math, and failover.
+- `GET /v1/models` answers locally with exactly the curated entries
+  (six at the time; no upstream proxy leak); chat with a virtual id
+  routes to a real backend offering. See [api.md](api.md),
+  [routing.md](routing.md), [pricing.md](pricing.md).
+- Value: clients see a stable curated menu (six at the time); the
+  gateway owns mapping, price math, and failover.
 - Test: each virtual id routes to an eligible offering in fixtures;
-  `/v1/models` returns exactly the six; unknown ids keep current
-  passthrough behavior.
+  `/v1/models` returns exactly the curated menu (six at the time);
+  unknown ids keep current passthrough behavior.
 - Landed: `parse_virtual` strict parsing before catalog split;
   `decide_virtual` (`free` shares legacy path per-id namespace,
   `low`/`think` cross-model with disjoint tiers + known-class guard);
@@ -421,7 +429,7 @@ Development delivers Docker images, platform delivers deployments.
   `cargo test -p pennyrouter-catalog`, clippy, fmt clean; workspace
   check clean.
 
-## Iter 19 — `lowest` tag (in progress)
+## Iter 19 — `lowest` tag (done)
 
 - Goal: a model suffix filter for the cheapest paid offering
   catalog-wide, with no quality floor — the fallback agents use
@@ -437,7 +445,7 @@ Development delivers Docker images, platform delivers deployments.
   models pass through; first orientation wins. Proven by 7 routing
   unit tests. `cargo test`, clippy, fmt clean.
 
-## Iter 20 — Decode gzipped upstream errors (in progress)
+## Iter 20 — Decode gzipped upstream errors (done)
 
 - Goal: readable error messages when upstreams gzip their 4xx/5xx
   bodies (found live: a gzipped 404 reached an agent as raw bytes).
@@ -449,7 +457,7 @@ Development delivers Docker images, platform delivers deployments.
   honesty). New `flate2` dependency (pure Rust, no C deps).
   Proven by 2 passthrough tests. `cargo test`, clippy, fmt clean.
 
-## Iter 21 — Free fallback + header-driven 429s (in progress)
+## Iter 21 — Free fallback + header-driven 429s (done)
 
 - Goal: survive free-tier exhaustion (50/day walls hit live) without
   client changes: `openrouter/pair/free/fallback/<tier>` serves free,
@@ -464,7 +472,7 @@ Development delivers Docker images, platform delivers deployments.
   Multi-account quota pooling stays a documented non-goal (ToS).
   Proven by unit + integration tests. `cargo test`, clippy, fmt clean.
 
-## Iter 22 — Tool-aware routing (in progress)
+## Iter 22 — Tool-aware routing (done)
 
 - Goal: end live-found "No endpoints found that support tool use"
   404s — tool-bearing agent requests pinned providers whose endpoint
@@ -479,7 +487,7 @@ Development delivers Docker images, platform delivers deployments.
   Proven by extraction + unit + 2 integration tests.
   `cargo test`, clippy, fmt clean.
 
-## Iter 23 — Standby router recovery (in progress)
+## Iter 23 — Standby router recovery (done)
 
 - Goal: a gateway booted against a missing, mid-write, or
   schema-older catalog recovers without a restart (live-found: the
@@ -493,7 +501,7 @@ Development delivers Docker images, platform delivers deployments.
   Proven by a standby-heals integration test.
   `cargo test`, clippy, fmt clean.
 
-## Iter 24 — Decision tier (in progress)
+## Iter 24 — Decision tier (done)
 
 - Goal: serve behavior-scoring ("decision") models through
   `openrouter/pair/decision/free` with fallback — the models list
@@ -524,7 +532,7 @@ Development delivers Docker images, platform delivers deployments.
   so mocks and Ollama bases keep working); non-GET key, coinbase,
   and workspace-budget paths answer 403 `management_proxy_disabled`
   unless `ALLOW_MANAGEMENT_PROXY=1`. `GET /api/v1/models` proxies the
-  full upstream catalog (the curated six-id menu stays on
+  full upstream catalog (the curated fourteen-id menu stays on
   `GET /v1/models`).
 - Test: `crates/gateway/tests/openrouter_native.rs` (alias rewrite,
   root composition with and without the `/api` suffix, upstream

@@ -67,6 +67,14 @@ usage trends (per app/key) ──► ranker input
 - **Immutable routing snapshots.** Background jobs build complete snapshots
   and publish them atomically; requests keep using the last good snapshot
   if a rebuild fails.
+- **One lock order, no nesting on reload.** Requests hold
+  `snapshot`/`ranking` read guards while separately taking
+  `sessions` or `throttled` (those two never nest inside each
+  other); reload takes `snapshot` and `ranking` write locks
+  sequentially, never nested, and never touches
+  `sessions`/`throttled` — so no lock cycle exists by inspection
+  (lock-held scans can still starve reload *writers*, which is a
+  latency risk, not a deadlock).
 - **Bounded realtime resources.** Queue depth and upstream concurrency are
   explicit; overload sheds load instead of growing memory without limit.
 - **Durable writes publish after commit.** Catalog updates become visible

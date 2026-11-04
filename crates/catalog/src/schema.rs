@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
     judged_at         TEXT,
     judge_model       TEXT,
     judge_prompt      TEXT,
+    price_override_tokens INTEGER,
     FOREIGN KEY (model_id) REFERENCES models(model_id)
 );
 CREATE INDEX IF NOT EXISTS idx_endpoints_model ON endpoints(model_id);
@@ -60,6 +61,7 @@ pub const ENDPOINT_INDEXED_COLUMNS: &[(&str, &str)] = &[
     ("judged_at", "TEXT"),
     ("judge_model", "TEXT"),
     ("judge_prompt", "TEXT"),
+    ("price_override_tokens", "INTEGER"),
 ];
 
 /// Phase 1 layout, kept so the migration test can build a legacy DB.

@@ -62,10 +62,21 @@ pub fn truncate_input(input: serde_json::Value, cap_chars: usize) -> serde_json:
     }
     match input {
         serde_json::Value::Array(mut items) => {
-            while items.len() > 1 && chars(&serde_json::Value::Array(items.clone())) > cap_chars {
-                items.remove(0);
+            // Measure each element once: a serialized array is exactly
+            // `[` + comma-joined elements + `]`, so dropping the head
+            // subtracts its size plus one comma. Re-serializing per drop
+            // is quadratic on long histories.
+            let sizes: Vec<usize> = items.iter().map(chars).collect();
+            let mut total: usize = sizes.iter().sum::<usize>() + sizes.len().saturating_sub(1) + 2;
+            let mut drop = 0;
+            while drop + 1 < items.len() && total > cap_chars {
+                total = total.saturating_sub(sizes[drop] + 1);
+                drop += 1;
             }
-            if items.len() == 1 && chars(&items[0]) > cap_chars {
+            if drop > 0 {
+                items.drain(..drop);
+            }
+            if items.len() == 1 && sizes[drop] > cap_chars {
                 let raw = serde_json::to_string(&items[0]).unwrap_or_default();
                 return serde_json::json!([{"role": "user", "content": head_truncated(&raw, cap_chars)}]);
             }
@@ -85,6 +96,22 @@ pub fn truncate_input(input: serde_json::Value, cap_chars: usize) -> serde_json:
     }
 }
 
+/// Chat-completions URL for the classifier leg: the configured base
+/// with any trailing `/v1` stripped (a base that already ends in `/v1`
+/// would otherwise double it), then `/v1/chat/completions` appended.
+/// Accepts the OpenRouter default (`…/api`), an explicit `…/api/v1`,
+/// and bare hosts alike.
+pub fn chat_url(base_url: &str) -> String {
+    format!(
+        "{}/v1/chat/completions",
+        crate::normalize_pinned_base(base_url)
+    )
+}
+
+/// S05 note (decided away by Q08): with no operator key in existence
+/// there is nothing to warn about — the caller key flows to the
+/// configured classifier base by model-choice consent, like pinned
+/// routes. This space is intentionally left without a predicate.
 /// Build the classifier request body: fixed model, system + one user
 /// turn carrying the tier gate and the (truncated) input, temperature
 /// zero, `json_object` only, never streamed. Privacy ids attach the
@@ -265,6 +292,61 @@ mod tests {
     }
 
     #[test]
+    fn chat_url_accepts_api_v1_and_bare_bases() {
+        assert_eq!(
+            chat_url("https://openrouter.ai/api"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_url("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_url("https://openrouter.ai/api/v1/"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_url("http://127.0.0.1:1234"),
+            "http://127.0.0.1:1234/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn truncation_scales_linearly() {
+        // C06 probe: 10k tiny messages must truncate in well under the
+        // classifier timeout. A per-drop full re-serialization is
+        // quadratic and blows this budget.
+        let items: Vec<serde_json::Value> = (0..10_000)
+            .map(|n| serde_json::json!({"role": "user", "content": format!("m{n}")}))
+            .collect();
+        let input = serde_json::Value::Array(items);
+        let start = std::time::Instant::now();
+        let cut = truncate_input(input, 100);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "truncation took {elapsed:?}, expected near-linear"
+        );
+        let kept = cut.as_array().unwrap();
+        assert!(!kept.is_empty());
+        // Survivors are the newest messages and the result fits the cap.
+        for message in kept.iter() {
+            let content = message["content"].as_str().unwrap();
+            // Either a surviving newest message or the head-truncated stub.
+            if let Some(n) = content
+                .strip_prefix('m')
+                .and_then(|n| n.parse::<usize>().ok())
+            {
+                assert!(n >= 9990, "dropped a newest message: {content}");
+            } else {
+                assert_eq!(kept.len(), 1, "unexpected stub shape: {content}");
+            }
+        }
+        let serialized = serde_json::to_string(&cut).unwrap();
+        assert!(serialized.chars().count() <= 100, "{serialized}");
+    }
+
+    #[test]
     fn truncation_drops_oldest_first() {
         let input = serde_json::json!([
             {"role": "user", "content": "oldest"},
@@ -301,5 +383,41 @@ mod tests {
         );
         let plain = build_request("clf", &tier_set(false), &serde_json::json!("hi"), 64, false);
         assert!(plain.get("provider").is_none());
+    }
+
+    #[test]
+    fn classifier_auth_prefers_the_per_request_key() {
+        // Q08: header override wins (raw key wrapped, prefixed kept),
+        // else the caller key rides verbatim, else unauthenticated.
+        use axum::http::HeaderMap;
+        let headers = |pairs: &[(&str, &str)]| {
+            let mut headers = HeaderMap::new();
+            for (name, value) in pairs {
+                headers.insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+            headers
+        };
+        assert_eq!(
+            crate::classifier_auth(&headers(&[
+                ("authorization", "Bearer caller"),
+                ("x-pennyrouter-classifier-key", "sk-clf"),
+            ])),
+            Some("Bearer sk-clf".to_string())
+        );
+        assert_eq!(
+            crate::classifier_auth(&headers(&[(
+                "x-pennyrouter-classifier-key",
+                "Bearer already"
+            )])),
+            Some("Bearer already".to_string())
+        );
+        assert_eq!(
+            crate::classifier_auth(&headers(&[("authorization", "Bearer caller")])),
+            Some("Bearer caller".to_string())
+        );
+        assert_eq!(crate::classifier_auth(&headers(&[])), None);
     }
 }
