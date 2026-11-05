@@ -11,6 +11,9 @@ async fn main() {
         .await
         .expect("bind listener");
     let state = pennyrouter_gateway::AppState::from_env();
+    if pennyrouter_gateway::ui_enabled() {
+        eprintln!("gateway: debug UI enabled (GET /ui)");
+    }
     // Catalog freshness (Iter 10; standby recovery Iter 23): reload
     // the snapshot periodically when routing is configured. The task
     // also heals a standby router once a good artifact lands, so a

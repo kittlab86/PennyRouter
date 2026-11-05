@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PennyRouter gateway</title>
+<style>
+  :root {
+    --ink: #1f2733;
+    --muted: #5c6675;
+    --line: #e4e8ef;
+    --wash: #f6f8fa;
+    --ok: #177245;
+    --ok-bg: #e5f3eb;
+    --warn: #8a5a00;
+    --warn-bg: #fbf0d3;
+    --link: #0b5cad;
+    --chip-blue: #1d4fd7;
+    --chip-blue-bg: #e7effc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #fff;
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.5;
+  }
+  a { color: var(--link); }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.875em;
+  }
+  header.top { background: var(--wash); border-bottom: 1px solid var(--line); }
+  .wrap { max-width: 56rem; margin: 0 auto; padding: 0 1.5rem; }
+  .brand { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; padding: 1.4rem 0; }
+  .brand h1 { font-size: 1.3rem; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  .brand h1 span { color: var(--muted); font-weight: 400; }
+  .brand .spacer { flex: 1; }
+  .badge {
+    font-size: 0.75rem; font-weight: 600; white-space: nowrap;
+    background: #e8edf2; color: #33404f; border-radius: 999px; padding: 0.15rem 0.65rem;
+  }
+  main .wrap { padding-top: 1.75rem; padding-bottom: 3rem; display: grid; gap: 2rem; }
+  section h2 { font-size: 1rem; margin: 0 0 0.6rem; font-weight: 650; }
+  section p.sub { margin: 0 0 0.6rem; color: var(--muted); font-size: 0.9rem; }
+  .panel { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  dl.status { margin: 0; }
+  dl.status > div { display: flex; gap: 1rem; align-items: baseline; padding: 0.65rem 1rem; }
+  dl.status > div + div { border-top: 1px solid var(--line); }
+  dl.status dt { flex: 0 0 9.5rem; color: var(--muted); font-size: 0.9rem; }
+  dl.status dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .pill {
+    display: inline-block; font-size: 0.72rem; font-weight: 700; line-height: 1;
+    border-radius: 999px; padding: 0.28rem 0.6rem; margin-right: 0.5rem; vertical-align: 0.08em;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table.endpoints { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  table.endpoints th, table.endpoints td { text-align: left; padding: 0.55rem 0.8rem; vertical-align: top; }
+  table.endpoints thead th {
+    background: var(--wash); color: var(--muted); font-weight: 600; font-size: 0.78rem;
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  table.endpoints tbody tr + tr td { border-top: 1px solid var(--line); }
+  table.endpoints td.path { white-space: nowrap; }
+  table.endpoints td.desc { color: var(--muted); }
+  .method {
+    display: inline-block; font-size: 0.7rem; font-weight: 700; line-height: 1;
+    border-radius: 5px; padding: 0.3rem 0.45rem; letter-spacing: 0.02em;
+  }
+  .method.get { background: var(--ok-bg); color: var(--ok); }
+  .method.post { background: var(--chip-blue-bg); color: var(--chip-blue); }
+  footer { border-top: 1px solid var(--line); }
+  footer .wrap { padding-top: 1rem; padding-bottom: 1.5rem; color: var(--muted); font-size: 0.82rem; }
+  footer .wrap p { margin: 0.15rem 0; }
+  @media (max-width: 40rem) {
+    dl.status > div { flex-direction: column; gap: 0.15rem; }
+    dl.status dt { flex: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap brand">
+    <h1>PennyRouter <span>gateway</span></h1>
+    <div class="spacer"></div>
+    <span class="badge">v{{version}}</span>
+  </div>
+</header>
+<main>
+  <div class="wrap">
+    <section aria-label="Status">
+      <h2>Status</h2>
+      <div class="panel">
+        <dl class="status">
+          <div>
+            <dt>Routing</dt>
+            <dd><span class="pill {{routing_pill_class}}">{{routing_pill_text}}</span><span class="mono">{{routing_text}}</span></dd>
+          </div>
+          <div>
+            <dt>Debug UI</dt>
+            <dd><span class="pill {{ui_pill_class}}">{{ui_pill_text}}</span>{{ui_detail}}</dd>
+          </div>
+          <div>
+            <dt>Default upstream</dt>
+            <dd><span class="mono">{{upstream}}</span></dd>
+          </div>
+          <div>
+            <dt>Pinned upstreams</dt>
+            <dd><span class="mono">{{pinned}}</span></dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+    <section aria-label="Endpoints">
+      <h2>Endpoints</h2>
+      <p class="sub">Routed chat, completions, and decisions go through the virtual menu — see <a href="/v1/models">/v1/models</a>.</p>
+      <div class="table-scroll">
+        <table class="endpoints">
+          <thead>
+            <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="method post">POST</span></td>
+              <td class="path mono">/v1/chat/completions</td>
+              <td class="desc">Routed chat completions (virtual ids, pinned providers, passthrough)</td>
+            </tr>
+            <tr>
+              <td><span class="method post">POST</span></td>
+              <td class="path mono">/v1/responses</td>
+              <td class="desc">Same routing policy for the Responses API</td>
+            </tr>
+            <tr>
+              <td><span class="method post">POST</span></td>
+              <td class="path mono">/v1/decisions</td>
+              <td class="desc">Decision-model requests over decisions-capable offerings</td>
+            </tr>
+            <tr>
+              <td><span class="method get">GET</span></td>
+              <td class="path mono"><a href="/v1/models">/v1/models</a></td>
+              <td class="desc">Curated virtual-model menu served locally</td>
+            </tr>
+            <tr>
+              <td><span class="method get">GET</span></td>
+              <td class="path mono"><a href="/ui">/ui</a></td>
+              <td class="desc">Debug UI: ranking, routing inspector, metrics ({{ui_endpoint_note}})</td>
+            </tr>
+            <tr>
+              <td><span class="method get">GET</span></td>
+              <td class="path mono"><a href="/metrics">/metrics</a></td>
+              <td class="desc">Prometheus counters and latency histogram</td>
+            </tr>
+            <tr>
+              <td><span class="method get">GET</span></td>
+              <td class="path mono"><a href="/health">/health</a> · <a href="/ready">/ready</a></td>
+              <td class="desc">Liveness (always) and readiness (catalog loaded)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+<footer>
+  <div class="wrap">
+    <p>PennyRouter gateway <span class="mono">v{{version}}</span> (build <span class="mono">{{build}}</span>)</p>
+    <p>OpenRouter-compatible routing proxy: one fast local lookup, single backend forward.</p>
+  </div>
+</footer>
+</body>
+</html>

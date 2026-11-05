@@ -638,7 +638,10 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn ui_enabled() -> bool {
+/// Whether `GET /ui` is registered. Read once at startup (route
+/// registration) and per request by the landing page; the two agree
+/// in production, where the process env is fixed for life.
+pub fn ui_enabled() -> bool {
     env_flag("GATEWAY_UI")
 }
 
@@ -686,9 +689,13 @@ pub fn app_with_state(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Fixed landing page (Iter 17): binary version + build hash and
-/// display/config status with links. Always registered — it answers
+/// Static landing template: one self-contained HTML file with inline
+/// CSS — no external assets, no extra requests. `{{…}}` placeholders
+/// carry the few dynamic values (version, build hash, config status);
+/// everything else is fixed markup. Always registered — it answers
 /// only its own path, so API traffic is unaffected.
+const LANDING_TEMPLATE: &str = include_str!("../templates/landing.html");
+
 async fn landing(State(state): State<AppState>) -> Response {
     fn esc(text: &str) -> String {
         text.replace('&', "&amp;")
@@ -700,39 +707,42 @@ async fn landing(State(state): State<AppState>) -> Response {
     if pinned.is_empty() {
         pinned.push("(none)".to_string());
     }
-    let ui = if ui_enabled() {
-        "<a href=\"/ui\">debug UI</a> (enabled)".to_string()
-    } else {
-        "debug UI (disabled — set GATEWAY_UI=1)".to_string()
-    };
-    let page = format!(
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-        <title>PennyRouter gateway</title>\
-        <style>body{{font-family:system-ui,sans-serif;margin:2em;max-width:72em}}</style>\
-        </head><body><h1>PennyRouter gateway</h1>\
-        <p>version <strong>{}</strong> (build <strong>{}</strong>)</p>\
-        <h2>Config</h2><ul>\
-        <li>routing: {}</li>\
-        <li>debug UI: {}</li>\
-        <li>default upstream: {}</li>\
-        <li>pinned upstreams: {}</li></ul>\
-        <h2>Links</h2><ul>\
-        <li><a href=\"/ui\">/ui</a> ranking + metrics (needs the flag)</li>\
-        <li><a href=\"/metrics\">/metrics</a> Prometheus text</li>\
-        <li><a href=\"/health\">/health</a> liveness</li>\
-        <li><a href=\"/v1/models\">/v1/models</a> virtual menu</li></ul>\
-        </body></html>",
-        esc(build_version()),
-        esc(build_hash()),
+    let (routing_class, routing_state, routing_text) =
         if state.router_handle().is_some_and(|r| r.is_ready()) {
-            "on (catalog)"
+            ("ok", "on", "on (catalog)")
         } else {
-            "off (passthrough)"
-        },
-        ui,
-        esc(state.upstream_base()),
-        esc(&pinned.join(", ")),
-    );
+            ("warn", "off", "off (passthrough)")
+        };
+    let (ui_class, ui_state, ui_detail, ui_note) = if ui_enabled() {
+        (
+            "ok",
+            "enabled",
+            "<a href=\"/ui\">debug UI</a> (enabled)".to_string(),
+            "enabled",
+        )
+    } else {
+        (
+            "warn",
+            "disabled",
+            "debug UI (disabled — set GATEWAY_UI=1)".to_string(),
+            "requires GATEWAY_UI=1",
+        )
+    };
+    // Longer placeholder names first: `{{routing_text}}` must not match
+    // inside `{{routing_pill_text}}` (it cannot — the `_pill_` infix
+    // breaks the match — but explicit ordering keeps that obvious).
+    let page = LANDING_TEMPLATE
+        .replace("{{version}}", &esc(build_version()))
+        .replace("{{build}}", &esc(build_hash()))
+        .replace("{{routing_pill_class}}", routing_class)
+        .replace("{{routing_pill_text}}", routing_state)
+        .replace("{{routing_text}}", routing_text)
+        .replace("{{ui_pill_class}}", ui_class)
+        .replace("{{ui_pill_text}}", ui_state)
+        .replace("{{ui_detail}}", &ui_detail)
+        .replace("{{upstream}}", &esc(state.upstream_base()))
+        .replace("{{pinned}}", &esc(&pinned.join(", ")))
+        .replace("{{ui_endpoint_note}}", ui_note);
     (
         StatusCode::OK,
         [("content-type", "text/html; charset=utf-8")],
@@ -837,11 +847,15 @@ fn preview_json(preview: &routing::Preview) -> serde_json::Value {
     })
 }
 
-/// Debug UI (Iter 17): read-only operator page. Snapshot version
-/// and counts, virtual menu, per-model offerings with the ranking's
-/// default-orientation provider order, free offers, and the raw
-/// metrics text. Rendered on demand from short read locks; nothing
-/// here runs on the request path.
+/// Static debug-UI shell: a tab bar over five panels (overview,
+/// models, inspector, classifier, metrics) plus the tab-switching
+/// script. `{{…}}` placeholders carry the server-rendered panels; the
+/// inspector script stays with its panel builder below, next to the
+/// fixed-combo ids it must match by index. Read-only, rendered on
+/// demand from short read locks; nothing here runs on the request
+/// path.
+const UI_TEMPLATE: &str = include_str!("../templates/ui.html");
+
 async fn ui_page(State(state): State<AppState>) -> Response {
     fn esc(text: &str) -> String {
         text.replace('&', "&amp;")
@@ -857,22 +871,26 @@ async fn ui_page(State(state): State<AppState>) -> Response {
     fn text(value: &Option<String>) -> String {
         value.as_deref().map(esc).unwrap_or_else(|| "-".to_string())
     }
-    let mut page = String::from(
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-        <title>PennyRouter gateway</title>\
-        <style>body{font-family:system-ui,sans-serif;margin:2em;max-width:72em}\
-        table{border-collapse:collapse;margin:1em 0}\
-        th,td{border:1px solid #999;padding:.3em .6em;text-align:left;font-size:.9em}\
-        th{background:#eee}pre{background:#f4f4f4;padding:1em;overflow:auto}</style>\
-        </head><body><h1>PennyRouter gateway</h1>",
-    );
-    match state.router_handle() {
-        None => page.push_str("<p>Routing: <strong>off</strong> (no catalog).</p>"),
-        Some(router) => {
-            let summary = router.ui_summary();
-            let models = summary.models.len();
-            let offerings: usize = summary.models.iter().map(|(_, o)| o.len()).sum();
-            page.push_str(&format!(
+    // One buffer per tab panel; each region below shadows `page` to
+    // its buffer so the existing builders move over unchanged.
+    let mut overview = String::new();
+    let mut models_panel = String::new();
+    let mut inspector = String::new();
+    let mut classifier = String::new();
+    let mut metrics_panel = String::new();
+    let router = state.router_handle();
+    {
+        let page = &mut overview;
+        match router.as_ref() {
+            None => {
+                page.push_str("<p>Routing: <strong>off</strong> (no catalog).</p>");
+                models_panel.push_str("<p>Routing off: no catalog loaded.</p>");
+            }
+            Some(router) => {
+                let summary = router.ui_summary();
+                let models = summary.models.len();
+                let offerings: usize = summary.models.iter().map(|(_, o)| o.len()).sum();
+                page.push_str(&format!(
                 "<p>Snapshot: <strong>{}</strong> — {models} models, {offerings} offerings.</p>",
                 summary
                     .artifact_version
@@ -880,109 +898,115 @@ async fn ui_page(State(state): State<AppState>) -> Response {
                     .map(esc)
                     .unwrap_or_else(|| "unversioned".to_string()),
             ));
-            page.push_str("<h2>Virtual menu</h2><ul>");
-            for id in routing::VIRTUAL_MODELS {
-                page.push_str(&format!("<li>{}</li>", esc(id)));
-            }
-            page.push_str("</ul>");
-            // Popularity pins: top OpenRouter models (menu pins, served
-            // passthrough) and hot apps, with the citation timestamp.
-            // The Data API publishes no per-app models, so apps are
-            // informational only — the gateway never keys off caller
-            // identity (no Referer/title collection).
-            let (popular, apps, as_of) = router.popularity();
-            if !popular.is_empty() || !apps.is_empty() {
-                page.push_str("<h2>Popular</h2>");
-                if !popular.is_empty() {
-                    page.push_str("<p>Top models by tokens, trailing week:</p><ul>");
-                    for slug in &popular {
-                        page.push_str(&format!("<li>openrouter/{}</li>", esc(slug)));
-                    }
-                    page.push_str("</ul>");
+                page.push_str("<h3>Virtual menu</h3><ul>");
+                for id in routing::VIRTUAL_MODELS {
+                    page.push_str(&format!("<li>{}</li>", esc(id)));
                 }
-                if !apps.is_empty() {
-                    page.push_str(
-                        "<p>Hot apps (informational — no per-app models published):</p><ul>",
-                    );
-                    for app in &apps {
-                        page.push_str(&format!("<li>{}</li>", esc(app)));
+                page.push_str("</ul>");
+                // Popularity pins: top OpenRouter models (menu pins, served
+                // passthrough) and hot apps, with the citation timestamp.
+                // The Data API publishes no per-app models, so apps are
+                // informational only — the gateway never keys off caller
+                // identity (no Referer/title collection).
+                let (popular, apps, as_of) = router.popularity();
+                if !popular.is_empty() || !apps.is_empty() {
+                    page.push_str("<h3>Popular</h3>");
+                    if !popular.is_empty() {
+                        page.push_str("<p>Top models by tokens, trailing week:</p><ul>");
+                        for slug in &popular {
+                            page.push_str(&format!("<li>openrouter/{}</li>", esc(slug)));
+                        }
+                        page.push_str("</ul>");
                     }
-                    page.push_str("</ul>");
+                    if !apps.is_empty() {
+                        page.push_str(
+                            "<p>Hot apps (informational — no per-app models published):</p><ul>",
+                        );
+                        for app in &apps {
+                            page.push_str(&format!("<li>{}</li>", esc(app)));
+                        }
+                        page.push_str("</ul>");
+                    }
+                    page.push_str(&format!(
+                        "<p><small>Popularity: OpenRouter Data API{}.</small></p>",
+                        as_of
+                            .as_deref()
+                            .map(|when| format!(", as of {}", esc(when)))
+                            .unwrap_or_default(),
+                    ));
                 }
-                page.push_str(&format!(
-                    "<p><small>Popularity: OpenRouter Data API{}.</small></p>",
-                    as_of
-                        .as_deref()
-                        .map(|when| format!(", as of {}", esc(when)))
-                        .unwrap_or_default(),
-                ));
-            }
-            page.push_str("<h2>Models</h2>");
-            for (model_id, entries) in &summary.models {
-                page.push_str(&format!("<h3>{}</h3>", esc(model_id)));
-                page.push_str(
-                    "<table><tr><th>provider</th><th>tag</th>\
+                {
+                    let page = &mut models_panel;
+                    for (model_id, entries) in &summary.models {
+                        page.push_str(&format!("<h3>{}</h3>", esc(model_id)));
+                        page.push_str(
+                            "<table><tr><th>provider</th><th>tag</th>\
                     <th>prompt $/tok</th><th>completion $/tok</th><th>class</th>\
                     <th>tier</th><th>score</th></tr>",
-                );
-                for entry in entries {
-                    page.push_str(&format!(
-                        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                        );
+                        for entry in entries {
+                            page.push_str(&format!(
+                                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
                         <td>{}</td><td>{}</td><td>{}</td></tr>",
-                        esc(&entry.provider),
-                        text(&entry.tag),
-                        money(entry.price_prompt),
-                        money(entry.price_completion),
-                        text(&entry.precision_class),
-                        text(&entry.quality_tier),
-                        entry
-                            .quality_score
-                            .map(|s| format!("{s:.3}"))
-                            .unwrap_or_else(|| "-".to_string()),
-                    ));
+                                esc(&entry.provider),
+                                text(&entry.tag),
+                                money(entry.price_prompt),
+                                money(entry.price_completion),
+                                text(&entry.precision_class),
+                                text(&entry.quality_tier),
+                                entry
+                                    .quality_score
+                                    .map(|s| format!("{s:.3}"))
+                                    .unwrap_or_else(|| "-".to_string()),
+                            ));
+                        }
+                        page.push_str("</table>");
+                        if let Some((_, classes)) =
+                            summary.ranking.iter().find(|(id, _)| id == model_id)
+                        {
+                            page.push_str("<p>Ranking order (default): ");
+                            let orders: Vec<String> = classes
+                                .iter()
+                                .map(|rank| {
+                                    format!(
+                                        "{}: {}",
+                                        rank.class.as_deref().unwrap_or("any"),
+                                        rank.order
+                                            .iter()
+                                            .map(|name| esc(name))
+                                            .collect::<Vec<_>>()
+                                            .join(" &gt; ")
+                                    )
+                                })
+                                .collect();
+                            page.push_str(&orders.join("<br>"));
+                            page.push_str("</p>");
+                        }
+                    }
                 }
-                page.push_str("</table>");
-                if let Some((_, classes)) = summary.ranking.iter().find(|(id, _)| id == model_id) {
-                    page.push_str("<p>Ranking order (default): ");
-                    let orders: Vec<String> = classes
-                        .iter()
-                        .map(|rank| {
-                            format!(
-                                "{}: {}",
-                                rank.class.as_deref().unwrap_or("any"),
-                                rank.order
-                                    .iter()
-                                    .map(|name| esc(name))
-                                    .collect::<Vec<_>>()
-                                    .join(" &gt; ")
-                            )
-                        })
-                        .collect();
-                    page.push_str(&orders.join("<br>"));
-                    page.push_str("</p>");
-                }
-            }
-            if !summary.free_offers.is_empty() {
-                page.push_str("<h2>Free offers</h2><table>\
+                if !summary.free_offers.is_empty() {
+                    page.push_str("<h3>Free offers</h3><table>\
                     <tr><th>model</th><th>provider</th><th>tag</th><th>valid until (unix)</th></tr>");
-                for (model_id, provider, tag, until) in &summary.free_offers {
-                    page.push_str(&format!(
-                        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                        esc(model_id),
-                        esc(provider),
-                        tag.as_deref().map(esc).unwrap_or_else(|| "-".to_string()),
-                        until
-                            .map(|u| u.to_string())
-                            .unwrap_or_else(|| "permanent".to_string()),
-                    ));
+                    for (model_id, provider, tag, until) in &summary.free_offers {
+                        page.push_str(&format!(
+                            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                            esc(model_id),
+                            esc(provider),
+                            tag.as_deref().map(esc).unwrap_or_else(|| "-".to_string()),
+                            until
+                                .map(|u| u.to_string())
+                                .unwrap_or_else(|| "permanent".to_string()),
+                        ));
+                    }
+                    page.push_str("</table>");
                 }
-                page.push_str("</table>");
             }
         }
     }
-    page.push_str("<h2>Routing inspector</h2>");
-    page.push_str(
-        "<p>Paste the exact <code>Authorization</code> header value a client sends \
+    {
+        let page = &mut inspector;
+        page.push_str(
+            "<p>Paste the exact <code>Authorization</code> header value a client sends \
         (for example <code>Bearer sk-…</code>). The page sends it as the \
         <code>Authorization</code> header to <code>/ui/preview</code>, where the gateway \
         hashes it with the same seeded hash the request path pins with. The raw key is \
@@ -990,101 +1014,101 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         (no session, always the fresh pick). Plain-request view: tools, budget, and \
         only/ignore constraints are not applied, so a capped request can fail closed \
         where the preview shows a pick.</p>",
-    );
-    page.push_str(
+        );
+        page.push_str(
         "<p><label>Session key: \
         <input type=\"password\" id=\"inspector-key\" size=\"40\" autocomplete=\"off\" \
         placeholder=\"Bearer sk-…\"> </label>\
-        <button id=\"inspector-refresh\" type=\"button\">Refresh fixed with key</button> \
+        <button id=\"inspector-refresh\" type=\"button\" class=\"action\">Refresh fixed with key</button> \
         <span id=\"inspector-hash\"></span></p>",
     );
-    page.push_str("<h3>Fixed combinations (top 3)</h3>");
-    page.push_str("<div style=\"overflow:auto\">");
-    if let Some(router) = state.router_handle() {
-        fn bool3(value: Option<bool>) -> &'static str {
-            match value {
-                Some(true) => "yes",
-                Some(false) => "no",
-                None => "-",
+        page.push_str("<h3>Fixed combinations (top 3)</h3>");
+        page.push_str("<div class=\"table-scroll\">");
+        if let Some(router) = router.as_ref() {
+            fn bool3(value: Option<bool>) -> &'static str {
+                match value {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "-",
+                }
             }
-        }
-        for (i, id) in routing::FIXED_PREVIEW_IDS.iter().enumerate() {
-            let preview = router.preview(id, None, 3);
-            page.push_str(&format!("<h4>{}</h4>", esc(id)));
-            match &preview.fresh {
-                Some(fresh) => page.push_str(&format!(
-                    "<p id=\"fixed-{i}-pick\">Fresh pick: <strong>{}</strong> ({})</p>",
-                    esc(&fresh.provider),
-                    esc(&fresh.model_id),
-                )),
-                None => page.push_str(&format!(
-                    "<p id=\"fixed-{i}-pick\">No eligible offering{}</p>",
-                    preview
-                        .rejection
-                        .as_ref()
-                        .map(|r| format!(" ({})", esc(r.code)))
-                        .unwrap_or_default(),
-                )),
-            }
-            page.push_str(
+            for (i, id) in routing::FIXED_PREVIEW_IDS.iter().enumerate() {
+                let preview = router.preview(id, None, 3);
+                page.push_str(&format!("<h4>{}</h4>", esc(id)));
+                match &preview.fresh {
+                    Some(fresh) => page.push_str(&format!(
+                        "<p id=\"fixed-{i}-pick\">Fresh pick: <strong>{}</strong> ({})</p>",
+                        esc(&fresh.provider),
+                        esc(&fresh.model_id),
+                    )),
+                    None => page.push_str(&format!(
+                        "<p id=\"fixed-{i}-pick\">No eligible offering{}</p>",
+                        preview
+                            .rejection
+                            .as_ref()
+                            .map(|r| format!(" ({})", esc(r.code)))
+                            .unwrap_or_default(),
+                    )),
+                }
+                page.push_str(
                 "<table><thead><tr><th>#</th><th>provider</th><th>backend model</th><th>tag</th>\
                 <th>prompt $/tok</th><th>completion $/tok</th><th>cache-read $/tok</th>\
                 <th>cache-write $/tok</th><th>effective</th><th>promo</th><th>class</th>\
                 <th>tier</th><th>score</th><th>tools</th><th>decisions</th>\
                 <th>free</th><th>availability</th><th>rank</th></tr></thead>",
             );
-            page.push_str(&format!("<tbody id=\"fixed-{i}-rows\">"));
-            for (n, c) in preview.candidates.iter().enumerate() {
-                page.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                page.push_str(&format!("<tbody id=\"fixed-{i}-rows\">"));
+                for (n, c) in preview.candidates.iter().enumerate() {
+                    page.push_str(&format!(
+                        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
                     <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
                     <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
                     <td>{}</td><td>{}</td><td>{}</td></tr>",
-                    n + 1,
-                    esc(&c.provider),
-                    esc(&c.model_id),
-                    c.tag.as_deref().map(esc).unwrap_or_else(|| "-".to_string()),
-                    money(c.price_prompt),
-                    money(c.price_completion),
-                    money(c.price_cache_read),
-                    money(c.price_cache_write),
-                    money(c.effective_cost),
-                    c.promo_discount
-                        .map(|d| format!("{d:.2}"))
-                        .unwrap_or_else(|| "-".to_string()),
-                    text(&c.precision_class),
-                    text(&c.quality_tier),
-                    c.quality_score
-                        .map(|s| format!("{s:.3}"))
-                        .unwrap_or_else(|| "-".to_string()),
-                    bool3(c.supports_tools),
-                    bool3(c.supports_decisions),
-                    if c.free_eligible { "yes" } else { "no" },
-                    if c.throttled {
-                        "cool-down"
-                    } else {
-                        "available"
-                    },
-                    c.rank_index
-                        .map(|r| r.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                ));
+                        n + 1,
+                        esc(&c.provider),
+                        esc(&c.model_id),
+                        c.tag.as_deref().map(esc).unwrap_or_else(|| "-".to_string()),
+                        money(c.price_prompt),
+                        money(c.price_completion),
+                        money(c.price_cache_read),
+                        money(c.price_cache_write),
+                        money(c.effective_cost),
+                        c.promo_discount
+                            .map(|d| format!("{d:.2}"))
+                            .unwrap_or_else(|| "-".to_string()),
+                        text(&c.precision_class),
+                        text(&c.quality_tier),
+                        c.quality_score
+                            .map(|s| format!("{s:.3}"))
+                            .unwrap_or_else(|| "-".to_string()),
+                        bool3(c.supports_tools),
+                        bool3(c.supports_decisions),
+                        if c.free_eligible { "yes" } else { "no" },
+                        if c.throttled {
+                            "cool-down"
+                        } else {
+                            "available"
+                        },
+                        c.rank_index
+                            .map(|r| r.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                    ));
+                }
+                page.push_str("</tbody></table>");
             }
-            page.push_str("</tbody></table>");
+        } else {
+            page.push_str("<p>Routing off: no catalog loaded.</p>");
         }
-    } else {
-        page.push_str("<p>Routing off: no catalog loaded.</p>");
-    }
-    page.push_str("</div>");
-    page.push_str(
-        "<h3>Custom model</h3>\
+        page.push_str("</div>");
+        page.push_str(
+            "<h3>Custom model</h3>\
         <p><label>Model: <input id=\"inspector-model\" size=\"48\" \
         placeholder=\"openrouter/pair/low\"></label> \
         <label>Top: <input id=\"inspector-top\" size=\"4\" value=\"5\"></label> \
-        <button id=\"inspector-go\" type=\"button\">Inspect</button></p>\
+        <button id=\"inspector-go\" type=\"button\" class=\"action\">Inspect</button></p>\
         <div id=\"inspector-result\"></div>",
-    );
-    page.push_str(
+        );
+        page.push_str(
         "<script>\
         function insEsc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')\
         .replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}\
@@ -1161,8 +1185,10 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         catch(e){}}};\
         </script>",
     );
-    page.push_str("<h2>Smart classifier</h2>");
-    match state.classifier_config() {
+    }
+    {
+        let page = &mut classifier;
+        match state.classifier_config() {
         None => page.push_str("<p>Classifier: <strong>off</strong> (set CLASSIFIER_MODEL) — smart ids fail closed.</p>"),
         Some(config) => {
             page.push_str(&format!(
@@ -1176,41 +1202,51 @@ async fn ui_page(State(state): State<AppState>) -> Response {
             ));
         }
     }
-    {
-        let summary = state.metrics.classifier_summary();
-        page.push_str("<table><tr><th>result</th><th>tier</th><th>count</th></tr>");
-        for (result, tier, count) in &summary.counts {
-            if *count == 0 {
-                continue;
+        {
+            let summary = state.metrics.classifier_summary();
+            page.push_str("<table><tr><th>result</th><th>tier</th><th>count</th></tr>");
+            for (result, tier, count) in &summary.counts {
+                if *count == 0 {
+                    continue;
+                }
+                page.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    esc(result),
+                    esc(tier),
+                    count
+                ));
             }
+            page.push_str("</table>");
+            let avg_ms = if summary.latency_count > 0 {
+                summary.latency_sum_ms / summary.latency_count as f64
+            } else {
+                0.0
+            };
             page.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
-                esc(result),
-                esc(tier),
-                count
+                "<p>Legs: {} (avg {avg_ms:.1} ms) — fallbacks: low {} / lowest {}.</p>",
+                summary.latency_count, summary.fallback_low, summary.fallback_lowest,
             ));
-        }
-        page.push_str("</table>");
-        let avg_ms = if summary.latency_count > 0 {
-            summary.latency_sum_ms / summary.latency_count as f64
-        } else {
-            0.0
-        };
-        page.push_str(&format!(
-            "<p>Legs: {} (avg {avg_ms:.1} ms) — fallbacks: low {} / lowest {}.</p>",
-            summary.latency_count, summary.fallback_low, summary.fallback_lowest,
-        ));
-        if !summary.last_error.is_empty() {
-            page.push_str(&format!("<p>Last error: {}</p>", esc(&summary.last_error)));
+            if !summary.last_error.is_empty() {
+                page.push_str(&format!("<p>Last error: {}</p>", esc(&summary.last_error)));
+            }
         }
     }
-    page.push_str("<h2>Metrics</h2><pre>");
-    page.push_str(&esc(&state.metrics.render()));
-    page.push_str("</pre></body></html>");
+    {
+        let page = &mut metrics_panel;
+        page.push_str("<pre>");
+        page.push_str(&esc(&state.metrics.render()));
+        page.push_str("</pre>");
+    }
+    let body = UI_TEMPLATE
+        .replace("{{overview}}", &overview)
+        .replace("{{models}}", &models_panel)
+        .replace("{{inspector}}", &inspector)
+        .replace("{{classifier}}", &classifier)
+        .replace("{{metrics}}", &metrics_panel);
     (
         StatusCode::OK,
         [("content-type", "text/html; charset=utf-8")],
-        page,
+        body,
     )
         .into_response()
 }

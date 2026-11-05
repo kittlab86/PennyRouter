@@ -144,6 +144,15 @@ async fn ui_enabled_shows_ranking_and_metrics() {
     assert!(body.contains("openrouter/pair/low"), "menu listed");
     assert!(body.contains("Metrics"), "metrics section present");
     assert!(body.contains("pennyrouter_"), "metrics text embedded");
+    // Tabbed shell: one tab bar, five panels, every placeholder filled.
+    assert!(body.contains("role=\"tablist\""), "tab bar present");
+    for panel in ["overview", "models", "inspector", "classifier", "metrics"] {
+        assert!(
+            body.contains(&format!("id=\"tab-{panel}\"")),
+            "{panel} panel present"
+        );
+    }
+    assert!(!body.contains("{{"), "no unrendered placeholders");
 }
 
 /// Popularity section: pins, hot apps, and the citation timestamp
@@ -301,6 +310,46 @@ async fn landing_shows_version_config_and_ui_link() {
     assert!(body.contains("disabled"), "UI flag state shown");
     assert!(body.contains("baseten"), "pinned upstreams listed");
     assert!(body.contains("off (passthrough)"), "routing state shown");
+    // Static template: every placeholder rendered, endpoint index intact.
+    assert!(!body.contains("{{"), "no unrendered placeholders");
+    assert!(body.contains("Endpoints"), "endpoint index present");
+    assert!(body.contains("/v1/chat/completions"), "chat path listed");
+    assert!(body.contains("/metrics"), "metrics path listed");
+    assert!(
+        body.contains("requires GATEWAY_UI=1"),
+        "UI endpoint carries the flag note while disabled"
+    );
+}
+
+#[tokio::test]
+async fn landing_enabled_links_ui_and_marks_status() {
+    let _guard = lock_env().await;
+    std::env::set_var("GATEWAY_UI", "1");
+    let (mock, _) = spawn_mock().await;
+    let state = pennyrouter_gateway::AppState::new(format!("http://{mock}"));
+    let app = pennyrouter_gateway::app_with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gw = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // The flag stays set through the request: the landing page reads it
+    // per request, like route registration reads it at startup.
+    let body = client()
+        .get(format!("http://{gw}/"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    std::env::remove_var("GATEWAY_UI");
+    assert!(body.contains("(enabled)"), "UI flag state shown");
+    assert!(
+        body.contains("<a href=\"/ui\">debug UI</a>"),
+        "status links the debug UI"
+    );
+    assert!(!body.contains("{{"), "no unrendered placeholders");
+    assert!(!body.contains("requires GATEWAY_UI=1"), "flag note lifted");
 }
 
 #[tokio::test]
