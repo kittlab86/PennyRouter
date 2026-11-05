@@ -12,7 +12,7 @@
 help: ## Show this help.
 	@echo "Common tasks (env in brackets = overridable defaults):"
 	@echo "  test         cargo test"
-	@echo "  run          cargo run -p pennyrouter-gateway  [PORT=3000]"
+	@echo "  run          cargo run -p pennyrouter-gateway  [PORT=8080]"
 	@echo "  dev          docker compose up --build (local dev)"
 	@echo "  dev-down     docker compose down --remove-orphans"
 	@echo "  docker-build docker build -f docker/Dockerfile  [IMAGE=pennyrouter:dev]"

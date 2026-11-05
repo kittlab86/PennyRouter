@@ -13,9 +13,9 @@ services:
     image: ${IMAGE:-ghcr.io/lsk242/pennyrouter:latest}
     container_name: gateway
     ports:
-      - "${HOST_PORT:-8003}:${PORT:-3000}"
+      - "${HOST_PORT:-8003}:${PORT:-8080}"
     environment:
-      PORT: ${PORT:-3000}
+      PORT: ${PORT:-8080}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api}
       MODAL_BASE_URL: ${MODAL_BASE_URL:-}
       BASETEN_BASE_URL: ${BASETEN_BASE_URL:-https://inference.baseten.co}
@@ -43,6 +43,28 @@ services:
       FETCH_OPENROUTER: ${FETCH_OPENROUTER:-0}
       EXTRA_MODEL_IDS: ${EXTRA_MODEL_IDS:-}
     restart: unless-stopped
+  # Read-only artifact browser (same image as catalog-sync): no
+  # published ports — it joins the front-proxy network so Nginx
+  # Proxy Manager reaches it at catalog-ui:8080. Create that proxy
+  # host in the NPM UI (port 81). The network must already exist
+  # on the host (it belongs to the proxy stack).
+  catalog-ui:
+    image: ${CATALOG_IMAGE:-ghcr.io/lsk242/pennyrouter-catalog:latest}
+    container_name: catalog-ui
+    command: ["catalog-ui", "--dir", "/catalog", "--bind", "0.0.0.0"]
+    volumes:
+      - catalog-data:/catalog:ro
+    environment:
+      CATALOG_UI: "1"
+      PORT: "8080"
+    networks:
+      - proxy
+    restart: unless-stopped
 
 volumes:
   catalog-data:
+
+networks:
+  proxy:
+    name: ${PROXY_NETWORK:-nginx-proxy_default}
+    external: true

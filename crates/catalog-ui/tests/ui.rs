@@ -245,6 +245,53 @@ fn port_env_selects_listen_port() {
 }
 
 #[test]
+fn bind_flag_selects_listen_address() {
+    let out = artifact_dir("bind");
+    let mut child = Command::new(bin())
+        .arg("--dir")
+        .arg(&out)
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg("0")
+        .env("CATALOG_UI", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut lines = BufReader::new(stdout).lines();
+    let first = lines.next().expect("address line").expect("readable");
+    assert!(
+        first.starts_with("catalog-ui on http://127.0.0.1:"),
+        "binds the requested address, got: {first}"
+    );
+    let addr = first
+        .strip_prefix("catalog-ui on http://")
+        .expect("address format")
+        .to_string();
+    let server = Server { child, addr };
+    let index = get(&server, "/");
+    assert!(index.contains("200 OK"), "got: {index}");
+}
+
+#[test]
+fn invalid_bind_rejected() {
+    let dir = artifact_dir("bad-bind");
+    let out = Command::new(bin())
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--bind")
+        .arg("not-an-ip")
+        .env("CATALOG_UI", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--bind needs an IP"), "got: {stderr}");
+}
+
+#[test]
 fn serves_runs_models_ranking_meta_and_log() {
     let out = artifact_dir("serve");
     let log = out.join("pipe.log");

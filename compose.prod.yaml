@@ -16,9 +16,9 @@ services:
     image: ${IMAGE:-ghcr.io/lsk242/pennyrouter:latest}
     container_name: gateway
     ports:
-      - "${HOST_PORT:-3000}:${PORT:-3000}"
+      - "${HOST_PORT:-3000}:${PORT:-8080}"
     environment:
-      PORT: ${PORT:-3000}
+      PORT: ${PORT:-8080}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api}
       MODAL_BASE_URL: ${MODAL_BASE_URL:-}
       BASETEN_BASE_URL: ${BASETEN_BASE_URL:-https://inference.baseten.co}

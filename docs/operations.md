@@ -6,8 +6,8 @@ Local run needs a Rust toolchain (rustup, stable); the container needs
 only Docker.
 
 ```sh
-cargo run -p pennyrouter-gateway   # serves :3000, PORT=... to override
-curl localhost:3000/health         # {"status":"ok"}
+cargo run -p pennyrouter-gateway   # serves :8080, PORT=... to override
+curl localhost:8080/health         # {"status":"ok"}
 ```
 
 Settings live in `.env` (copy [`.env.example`](../.env.example)); every
@@ -129,9 +129,9 @@ Point OpenAI-compatible harnesses at the gateway with an explicit
 `baseURL` — no DNS tricks needed (detail:
 [proposals/2026-11-01-openrouter-interface.md](proposals/2026-11-01-openrouter-interface.md)):
 
-- OpenAI-shaped clients: `baseURL http://gateway:3000/v1` (curated
+- OpenAI-shaped clients: `baseURL http://gateway:8080/v1` (curated
   `openrouter/pair/…` menu, routing, budget, retry).
-- OpenRouter-native SDKs: `baseURL http://gateway:3000/api/v1` (same
+- OpenRouter-native SDKs: `baseURL http://gateway:8080/api/v1` (same
   routed chat/responses handler; account/catalog paths proxy to
   OpenRouter; `GET /api/v1/models` returns the full upstream catalog).
 
@@ -219,18 +219,24 @@ code runs when they are off.
   preview as an explanatory rejection (their tier comes from the live
   classifier leg). Missing `model` answers 400, no router answers 503.
 - Catalog: `CATALOG_UI=1 catalog-ui --dir <artifact-dir>
-  [--port 8080] [--log-file <path>]` serves a browser over the
-  published artifacts: run history (manifests newest-first with
-  verify status), models, endpoints (with judge provenance),
-  ranking order, rebuild/audit meta, and the last 200 lines of the
-  log file when given. The binary refuses to start without the flag.
-  Nothing is cached or written, so it can run against the live
-  artifact dir safely. Bind is localhost-only; expose further only
-  behind your own firewall. In Docker the `catalog-ui` compose
-  service (profile `ui`, off by default) serves the shared volume:
+  [--port 8080] [--bind 127.0.0.1] [--log-file <path>]` serves a
+  browser over the published artifacts: run history (manifests
+  newest-first with verify status), models, endpoints (with judge
+  provenance), ranking order, rebuild/audit meta, and the last 200
+  lines of the log file when given. The binary refuses to start
+  without the flag. Nothing is cached or written, so it can run
+  against the live artifact dir safely. Bind is localhost-only by
+  default; pass `--bind 0.0.0.0` only behind a firewall or reverse
+  proxy. In Docker the `catalog-ui` compose service (profile `ui`,
+  off by default) serves the shared volume:
   `docker compose --profile ui up catalog-ui --build`, then open
   http://localhost:8080 (host port from `CATALOG_UI_PORT`). The
   container port comes from `PORT` (default 8080, `--port` wins).
+  The deployed stack (`compose.dev.yaml`) runs catalog-ui with no
+  published port on the front-proxy network (`PROXY_NETWORK`,
+  default `nginx-proxy_default`, which must already exist on the
+  host): create a proxy host in the NPM UI for `catalog-ui:8080`
+  (stable container name, like `gateway`).
 
 ## Ranking
 

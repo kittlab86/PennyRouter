@@ -8,7 +8,8 @@
 //! disturb a running sync.
 //!
 //! Off unless explicitly enabled: `CATALOG_UI=1` is required, the
-//! binary exits otherwise. No auth — bind localhost or firewall it.
+//! binary exits otherwise. No auth — binds localhost unless `--bind`
+//! says otherwise; firewall any wider bind.
 
 use axum::{extract::State, response::Html, routing::get, Router};
 use pennyrouter_catalog::{load_ranking_doc, verify, verify_ranking, Catalog};
@@ -22,7 +23,7 @@ struct UiState {
 }
 
 fn usage() -> &'static str {
-    "usage: CATALOG_UI=1 catalog-ui --dir <artifact-dir> [--port <port> | PORT=<port>] [--log-file <path>]"
+    "usage: CATALOG_UI=1 catalog-ui --dir <artifact-dir> [--port <port> | PORT=<port>] [--bind <addr>] [--log-file <path>] (bind default 127.0.0.1)"
 }
 
 fn esc(text: &str) -> String {
@@ -378,6 +379,7 @@ fn run() -> Result<(), String> {
     }
     let argv: Vec<String> = std::env::args().collect();
     let mut dir: Option<PathBuf> = None;
+    let mut bind: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
     let mut port: u16 = match std::env::var("PORT") {
         Err(_) => 8080,
         Ok(raw) if raw.is_empty() => 8080,
@@ -408,6 +410,12 @@ fn run() -> Result<(), String> {
                     .parse()
                     .map_err(|_| "--port needs a numeric value".to_string())?
             }
+            "--bind" => {
+                let raw = value(inline)?;
+                bind = raw
+                    .parse()
+                    .map_err(|_| format!("--bind needs an IP address, got {raw:?}"))?
+            }
             "--log-file" => log_file = Some(PathBuf::from(value(inline)?)),
             "--help" | "-h" => return Err("help".to_string()),
             other => return Err(format!("unknown flag: {other}")),
@@ -431,9 +439,9 @@ fn run() -> Result<(), String> {
         .build()
         .map_err(|e| format!("runtime: {e}"))?
         .block_on(async {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            let listener = tokio::net::TcpListener::bind((bind, port))
                 .await
-                .map_err(|e| format!("bind 127.0.0.1:{port}: {e}"))?;
+                .map_err(|e| format!("bind {bind}:{port}: {e}"))?;
             let addr = listener
                 .local_addr()
                 .map_err(|e| format!("local addr: {e}"))?;

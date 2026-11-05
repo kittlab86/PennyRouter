@@ -43,9 +43,9 @@ jobs:
           tags: ${{ env.IMAGE }}
       - name: Smoke test /health
         run: |
-          docker run -d --name gw -p 3000:3000 "${IMAGE}"
+          docker run -d --name gw -p 8080:8080 "${IMAGE}"
           sleep 2
-          curl -fsS http://localhost:3000/health
+          curl -fsS http://localhost:8080/health
           docker stop gw
       - uses: docker/build-push-action@v7
         with:
