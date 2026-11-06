@@ -201,8 +201,9 @@ Development delivers Docker images, platform delivers deployments.
   `pennyrouter_catalog_reload_total{result="ok|error"}`. `cargo test`
   (84 passed), clippy clean, fmt clean; new `tests/reload.rs`
   (new-model pickup, corrupt-DB last-good, background publish).
-  Note: `CATALOG_DB` in prod compose/Terraform left for the platform
-  track — the gateway side honors it whenever set.
+  Note: `CATALOG_DB` in Terraform left for the platform
+  track — the gateway side honors it whenever set, and prod compose
+  now mounts `CATALOG_DB=/catalog` (Q14-A).
 
 ## Iter 11 — Bug-review fixes (done)
 
@@ -247,7 +248,7 @@ Development delivers Docker images, platform delivers deployments.
 ## Iter 12 — Hot-path hygiene + fresh baseline (done)
 
 - Goal: act on the
-  [resource-efficiency review](review/PennyRouter-resource-efficiency-review.md) —
+  [resource-efficiency review](review/PennyRouter-Rust-resource-efficiency-review.md) —
   buffered structured logging (no `println!` per request), less
   per-request lock contention; re-run `tests/load` and record
   post-Iter-11 numbers (Iter 3 baseline was stale).
@@ -269,15 +270,22 @@ Development delivers Docker images, platform delivers deployments.
   +0.22ms, p99 +4.15ms; 0 errors on all sides; no sheds, no guard
   rejections. p50 matches Iter 3 exactly, so the typical path did not
   regress; the p99 tail is open investigation, not a verdict.
+- Confirmation N=5 (2026-11-04, Q17, same params, current tree):
+  `tests/load/results/compare-20261104T14*` r1–r5. json overhead
+  median p50 +0.28ms / p99 +0.43ms; sse median p50 +0.20ms / p99
+  +0.11ms; 0 errors in all 10 phases; gateway peak RSS 15.0–15.5 MiB
+  under 20-session load (far inside the 1 GB profile). The +13.10ms
+  spike was variance — bug-todo P0 closed, no latency iteration.
 
 ## Iter 13 — Virtual model catalog, free-first (done)
 
-- Goal: serve six virtual models and nothing else. Ids carry the
-  provider first so future providers slot in (today only OpenRouter,
-  BYOK key forwarded as now): `openrouter/pair/free`,
-  `openrouter/pair/low`, `openrouter/pair/think`,
-  `openrouter/pair/privacy/free`, `openrouter/pair/privacy/low`,
-  `openrouter/pair/privacy/think`.
+- Goal: serve the curated virtual-model menu and nothing else (six
+  at the time; fourteen curated ids + pinned-model/fallback forms
+  today). Ids carry the provider first so future providers slot in
+  (today only OpenRouter, BYOK key forwarded as now):
+  `openrouter/pair/free`, `openrouter/pair/low`,
+  `openrouter/pair/think`, `openrouter/pair/privacy/free`,
+  `openrouter/pair/privacy/low`, `openrouter/pair/privacy/think`.
 - Tiers: `free` = zero-cost offering; `low` = cheapest basic
   (cheapest effective cost across models); `think` = best quality
   signals across models. No speed/latency axis in v1.
@@ -290,15 +298,15 @@ Development delivers Docker images, platform delivers deployments.
   false (gateway-owned failover, no upstream surprise). For `free`
   (and all virtual picks), organic 429 history steers around
   throttled providers (60s cool-down) with availability fallback.
-- `GET /v1/models` answers locally with exactly the six curated
-  entries (no upstream proxy leak); chat with a virtual id routes to a
-  real backend offering. See [api.md](api.md), [routing.md](routing.md),
-  [pricing.md](pricing.md).
-- Value: clients see a stable 6-model menu; the gateway owns mapping,
-  price math, and failover.
+- `GET /v1/models` answers locally with exactly the curated entries
+  (six at the time; no upstream proxy leak); chat with a virtual id
+  routes to a real backend offering. See [api.md](api.md),
+  [routing.md](routing.md), [pricing.md](pricing.md).
+- Value: clients see a stable curated menu (six at the time); the
+  gateway owns mapping, price math, and failover.
 - Test: each virtual id routes to an eligible offering in fixtures;
-  `/v1/models` returns exactly the six; unknown ids keep current
-  passthrough behavior.
+  `/v1/models` returns exactly the curated menu (six at the time);
+  unknown ids keep current passthrough behavior.
 - Landed: `parse_virtual` strict parsing before catalog split;
   `decide_virtual` (`free` shares legacy path per-id namespace,
   `low`/`think` cross-model with disjoint tiers + known-class guard);
@@ -421,8 +429,191 @@ Development delivers Docker images, platform delivers deployments.
   `cargo test -p pennyrouter-catalog`, clippy, fmt clean; workspace
   check clean.
 
-## After Iter 18
+## Iter 19 — `lowest` tag (done)
 
-Deferred ideas in [future.md](future.md): classifier routing,
+- Goal: a model suffix filter for the cheapest paid offering
+  catalog-wide, with no quality floor — the fallback agents use
+  when free turns run out.
+- Value: one tag covers the "just make it cheap" case without
+  curating per-model suffixes; stricter callers keep `low`.
+- Shipped: `lowest` orientation (`Orientation::Lowest`) sharing the
+  `low` tier's paid-only filter, budget, throttle skip, stickiness
+  (full tagged-id namespace), and deterministic tie-breaks
+  (cost, model id, provider), minus the judged-tier floor.
+  Fail-closed (`no_eligible_offering` 503, `budget_exceeded` 400)
+  on the request path; exactly-once (no tag retry); unknown base
+  models pass through; first orientation wins. Proven by 7 routing
+  unit tests. `cargo test`, clippy, fmt clean.
+
+## Iter 20 — Decode gzipped upstream errors (done)
+
+- Goal: readable error messages when upstreams gzip their 4xx/5xx
+  bodies (found live: a gzipped 404 reached an agent as raw bytes).
+- Value: agents see actionable errors and classify retries
+  correctly; success-path bytes stay untouched.
+- Shipped: `decode_error_body` (gzip-magic detect, 1 MiB bounded
+  decode, raw fallback on corrupt input) on the error path only;
+  decoded JSON errors forward without the encoding claim (F03
+  honesty). New `flate2` dependency (pure Rust, no C deps).
+  Proven by 2 passthrough tests. `cargo test`, clippy, fmt clean.
+
+## Iter 21 — Free fallback + header-driven 429s (done)
+
+- Goal: survive free-tier exhaustion (50/day walls hit live) without
+  client changes: `openrouter/pair/free/fallback/<tier>` serves free,
+  then exactly one tier pick; 429s carry real reset info.
+- Value: agents ride free until it's gone, then paid, with honest
+  signals throughout — no fixed timers, no invented quota state.
+- Shipped: header-derived cool-down (`Retry-After` → reset epoch-ms
+  → 60s default, 24h clamp); preserved `X-RateLimit-*` on 429s;
+  4-segment fallback ids through shared tier dispatch (`low`,
+  `think`, `lowest`; unknown fails closed); post-retry fallback leg
+  skipping the burned provider; no fallback on auth/config errors.
+  Multi-account quota pooling stays a documented non-goal (ToS).
+  Proven by unit + integration tests. `cargo test`, clippy, fmt clean.
+
+## Iter 22 — Tool-aware routing (done)
+
+- Goal: end live-found "No endpoints found that support tool use"
+  404s — tool-bearing agent requests pinned providers whose endpoint
+  lacks tool support.
+- Value: agents keep `tools`/`patch` on; the gateway steers to
+  capable endpoints or fails closed with the fix, never an upstream
+  404.
+- Shipped: per-endpoint `supports_tools` index (schema v4, auto-
+  migrate); `needs_tools` detection in `ProviderConstraints`; staged
+  tool filter on `free`/`low`/`think`/`lowest`/direct paths;
+  `tools_unsupported` 400; fallback still fires past starvation.
+  Proven by extraction + unit + 2 integration tests.
+  `cargo test`, clippy, fmt clean.
+
+## Iter 23 — Standby router recovery (done)
+
+- Goal: a gateway booted against a missing, mid-write, or
+  schema-older catalog recovers without a restart (live-found: the
+  reload task never spawned when the initial load failed, so routing
+  stayed dark until a manual restart).
+- Value: deploys that land before catalog-sync finishes heal
+  automatically on the next reload tick.
+- Shipped: `Router::standby` (empty snapshot, source set) attached
+  by `from_env` on load failure; `is_ready()` drives the landing
+  page; reload task always spawns when `CATALOG_DB` is set.
+  Proven by a standby-heals integration test.
+  `cargo test`, clippy, fmt clean.
+
+## Iter 24 — Decision tier (done)
+
+- Goal: serve behavior-scoring ("decision") models through
+  `openrouter/pair/decision/free` with fallback — the models list
+  omits them entirely, so the tier needs its own signal and sync
+  path.
+- Value: judge/scoring workloads ride a routed pool instead of
+  hardcoding one provider; exhaustion falls through to a paid tier.
+- Shipped: per-endpoint `supports_decisions` index from the parent
+  model payload (schema v5, auto-migrate); `EXTRA_MODEL_IDS` fetch
+  seam for unlisted ids (FK-safe: model + endpoints kept as a pair);
+  `decision` tier (cheapest-capable, no floor, no class gate) with
+  `/free` scope + `/fallback/<tier>`; `decision` fallback target.
+  Proven by extraction + fetch + parse + 3 integration tests.
+  `cargo test`, clippy, fmt clean.
+
+## Iter 25 — OpenRouter-native interface (done)
+
+- Goal: OpenRouter-native SDKs work through the gateway with an
+  explicit `baseURL`, no DNS spoofing. See
+  [proposals/2026-11-01-openrouter-interface.md](proposals/2026-11-01-openrouter-interface.md).
+- Value: native clients keep their paths (`/api/v1/…`); account and
+  catalog reads stop 404ing on a doubled `/api`; money/key writes
+  stay denied by default.
+- Shipped: `POST /api/v1/chat/completions` and
+  `POST /api/v1/responses` alias to the routed handler (upstream path
+  rewritten to `/v1/…`, same metrics slots); native fallback paths
+  compose against the upstream root (configured base minus `/api`,
+  so mocks and Ollama bases keep working); non-GET key, coinbase,
+  and workspace-budget paths answer 403 `management_proxy_disabled`
+  unless `ALLOW_MANAGEMENT_PROXY=1`. `GET /api/v1/models` proxies the
+  full upstream catalog (the curated fourteen-id menu stays on
+  `GET /v1/models`).
+- Test: `crates/gateway/tests/openrouter_native.rs` (alias rewrite,
+  root composition with and without the `/api` suffix, upstream
+  catalog, deny-by-default + opt-in, reads unaffected) plus a
+  `Route::from_path` unit test. `cargo test`, clippy, fmt clean.
+
+## Iter 26 — Smart classifier (done)
+
+- Goal: serve `openrouter/pair/smart[/max]` (plus `privacy/`
+  variants): one decision-model leg picks the cheapest tier that can
+  answer well (`free`/`lowest`/`low`, plus `think` on `smart/max`),
+  then the normal tier dispatch serves it — the one explicit,
+  scoped exception to the no-network routing contract.
+- Value: agents stop guessing between free-first and paid quality;
+  the gateway picks per request, with honest fallback + headers.
+- Shipped: `smart`/`smart/max` parse + 14-id menu, `classifier.rs`
+  (prompt, input extraction/truncation, strict verdict validation),
+  async classifier leg (own timeout, no self-retry, BYOK preserved,
+  privacy fields on both legs), fail-closed/fallback contract
+  (`classifier_not_configured` 503, `classifier_auth_error` 502,
+  fallback tier marked, rejected tiers never re-picked), no session
+  pinning on the smart path, classifier metrics + `/ui` panel.
+  Proven by `crates/gateway/tests/smart_classifier.rs` (16
+  integration tests over mock classifier + mock upstream) plus
+  classifier/verdict and routing unit tests.
+  `cargo test`, clippy, fmt clean.
+
+## Iter 27 — Decisions route (done)
+
+- Goal: serve decision models for real — the tier routes, but span
+  400s on chat completions; it needs the alpha decisions endpoint.
+- Value: `POST /v1/decisions` answers scoring workloads through the
+  routed pool with chat-grade resilience.
+- Shipped: decisions handler (model-only rewrite, alpha forward,
+  retry + `decision`-only fallback, provider header, 429 memory);
+  `decisions` observability slot; 5 integration tests.
+  `cargo test`, clippy, fmt clean.
+
+## Iter 28 — Pinned-model routes (done)
+
+- Goal: let a caller pin to one specific model (e.g.
+  `deepseek/deepseek-v4.1-flash`) and have the gateway pick the best
+  provider for it — not cross-model, just best provider within that
+  model — with fallback when needed.
+- Value: agents that need a particular capability don't hardcode
+  one provider; the router keeps one virtual id, many providers.
+- Shipped: `openrouter/pair/model/<model-id>` (and
+  `privacy/model/<id>`) with `.../fallback/<tier>`; the pinned leg
+  serves first, the named cross-model tier leg on exhaustion, with
+  header cool-down + budget/tool checks scoped to the pinned model.
+  Proven by parsing + 1 integration test file (route, fallback,
+  tool/budget, unknown-model, privacy wiring).
+  `cargo test --workspace`, clippy, fmt clean.
+
+## Iter 29 — Routing inspector (done)
+
+- Goal: show in realtime what each model combination returns for one
+  key — fixed common combos top-3 plus an open model box, with the
+  stored columns and the sticky-vs-fresh answer.
+- Value: operators stop guessing which provider a key gets and why;
+  session stickiness becomes visible instead of tribal knowledge.
+- Shipped: read-only `Router::preview` (top-N ordered candidates,
+  sticky pick with this key vs fresh pick without session, session
+  namespace + hash, all stored columns plus effective cost, free
+  eligibility, throttle availability, rank index; smart ids preview
+  as an explanatory rejection; fallback legs preview the serving
+  leg); `GET /ui/preview?model=<id>&top=N` JSON behind `GATEWAY_UI=1`
+  (key as `Authorization`, never logged/stored, never pins; missing
+  model 400, no router 503, disabled falls through); `/ui` inspector
+  (key box with hash, ten fixed non-smart virtual ids top-3
+  server-rendered anonymous plus keyed refresh, custom-model box
+  with sticky/fresh panel and full column tables).
+- Test: `crates/gateway/tests/ui.rs` preview suite (low top-1 matches
+  decide, think/low/free/decision tiers, sticky-vs-fresh across a
+  snapshot swap matching decide, preview-never-pins via hash,
+  throttled pin falls through, endpoint JSON columns, 400/503,
+  disabled falls through, page content). `cargo test`, clippy, fmt
+  clean.
+
+## After Iter 29
+
+Deferred ideas in [future.md](future.md): exact price prediction,
 parallel fan-out, more judge models. Each becomes roadmap items only
 when pulled forward deliberately.

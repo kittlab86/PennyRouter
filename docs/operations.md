@@ -44,7 +44,13 @@ Deploy targets are env vars (see the header of
 the server. The dev compose file runs `catalog-sync` beside the
 gateway on the shared volume; it is still a separate process that
 shares only the versioned DB artifact (see
-[architecture.md](architecture.md)).
+[architecture.md](architecture.md)). `compose.prod.yaml` is
+gateway-only but mounts the same volume at `CATALOG_DB=/catalog`:
+the separately-deployed catalog-sync ships artifacts there, and an
+empty volume means standby passthrough until the first one lands
+(Q14-A). All gateway env (`UPSTREAM_MAX_*`, `RELOAD_INTERVAL_SECS`,
+`ALLOW_MANAGEMENT_PROXY`, `CLASSIFIER_*`) is forwarded in all three
+compose files with code defaults, so shipped `.env` values apply.
 
 CI builds `ghcr.io/lsk242/pennyrouter:latest` and smoke-tests `/health`
 on every PR, and pushes it on merges to main. It also rejects any
@@ -78,7 +84,8 @@ tag for the local build; prod: image to pull), `OPENROUTER_BASE_URL`
 (upstream for chat completions, default `https://openrouter.ai/api`),
 `MODAL_BASE_URL` (upstream for `modal/…` routes, unset by default),
 `BASETEN_BASE_URL` (upstream for `baseten/…` routes, default
-`https://inference.baseten.co/v1`), `GATEWAY_UI` (set to `1` to
+`https://inference.baseten.co`, no `/v1` prefix — the gateway appends
+the request path itself and strips a trailing `/v1`), `GATEWAY_UI` (set to `1` to
 register the read-only `GET /ui` debug page on the gateway, unset
 means the route does not exist),
 `CATALOG_DB` (catalog artifact for routing: directory, manifest, or DB
@@ -89,6 +96,50 @@ newest verified ranking artifact when one exists (see
 and `UPSTREAM_MAX_QUEUED` (default 128: max requests waiting for a
 slot); beyond both, the gateway sheds with OpenAI-shaped 503 +
 `Retry-After`, counted in `pennyrouter_load_shed_total`.
+`ALLOW_MANAGEMENT_PROXY` (unset default: management writes through the
+fallback proxy — key creation, credit purchases, workspace budget
+changes — answer 403 `management_proxy_disabled` without touching
+upstream; set to `1` to proxy them. Reads are unaffected).
+`RELOAD_INTERVAL_SECS` (catalog reload cadence, default 60; 0 disables
+the background reload).
+Smart classifier leg (Iter 26): `CLASSIFIER_MODEL` (unset disables the
+smart ids, which fail closed; every other id keeps pure-local
+routing), `CLASSIFIER_BASE_URL` (default: the OpenRouter base),
+`CLASSIFIER_TIMEOUT_MS`, `CLASSIFIER_FALLBACK_TIER`
+(`low`/`lowest`), `CLASSIFIER_MAX_TOKENS`, `CLASSIFIER_MAX_INPUT_CHARS`.
+No stored key, ever (Q08): the leg uses the caller's `Authorization`
+header, optionally overridden per-request by
+`x-pennyrouter-classifier-key`.
+Catalog pipeline: `CATALOG_IMAGE` (sync image tag), `SYNC_INTERVAL`
+(seconds between sync cycles, 0 = run once), `FETCH_OPENROUTER`
+(1 = live fetch, 0 = baked fixtures), `EXTRA_MODEL_IDS`
+(comma-separated ids fetched individually), `RANKINGS_API_KEY` (menu
+popularity pins via the Data API; unset = published without pins),
+judge keys (`BASETEN_API_KEY`, `MODAL_KEY_ID`/`MODAL_KEY_SECRET`,
+`MODAL_JUDGE_URL`; unset = recorded-fixture judging), `CATALOG_UI`
+(`1` lets the catalog-ui browser start). Gateway menu lists:
+`MODAL_MODELS` / `BASETEN_MODELS` (comma-separated, 1–3 ids each,
+advertised only when the provider base is configured). Popularity
+data: OpenRouter Data API (CC-BY). Exact defaults live in
+[`.env.example`](../.env.example), which stays canonical.
+
+## OpenRouter-native clients (Iter 25)
+
+Point OpenAI-compatible harnesses at the gateway with an explicit
+`baseURL` — no DNS tricks needed (detail:
+[proposals/2026-11-01-openrouter-interface.md](proposals/2026-11-01-openrouter-interface.md)):
+
+- OpenAI-shaped clients: `baseURL http://gateway:3000/v1` (curated
+  `openrouter/pair/…` menu, routing, budget, retry).
+- OpenRouter-native SDKs: `baseURL http://gateway:3000/api/v1` (same
+  routed chat/responses handler; account/catalog paths proxy to
+  OpenRouter; `GET /api/v1/models` returns the full upstream catalog).
+
+DNS-intercepting `openrouter.ai` toward the gateway stays a local-dev
+trick only: the client expects a real `openrouter.ai` certificate, so
+it needs either plain `http://` (LAN-only, many SDKs refuse non-TLS)
+or a privately distributed CA (e.g. Caddy `tls internal`). Prefer the
+explicit `baseURL` above.
 No local key store:
 backend keys travel with requests, never in config or fixtures. The
 one exception is catalog judging (Phase 4): the offline
@@ -136,12 +187,37 @@ code runs when they are off.
 - Gateway: `GATEWAY_UI=1` registers `GET /ui` on the gateway port:
   snapshot version and counts, the virtual menu, per-model
   offerings with the ranking's default-orientation provider order,
-  free offers, and the metrics text. Rendered on demand from short
-  read locks; routing never waits on it and it never calls upstream.
-  Unset (the default) leaves `/ui` unregistered — the path falls
-  through to the fallback proxy like any unknown path. `GET /`
-  always serves a fixed landing page (version, build hash, config
-  status, links) instead of proxying upstream.
+  free offers, a routing inspector, and the metrics text. Rendered
+  on demand from short read locks; routing never waits on it and it
+  never calls upstream. Unset (the default) leaves `/ui` (and
+  `/ui/preview`) unregistered — the paths fall through to the
+  fallback proxy like any unknown path. `GET /` always serves a
+  fixed landing page (version, build hash, config status, links)
+  instead of proxying upstream. The gateway binds 0.0.0.0: `/ui`,
+  `/metrics`, and `/` are unauthenticated by design, so expose the
+  port beyond localhost only behind your own firewall (same rule as
+  catalog-ui above); beyond a LAN, terminate TLS in front.
+- Public surface (Q09-A): no gateway route requires an operator
+  credential — routing is pure BYOK (the caller's key rides each
+  request), smart/preview need only the caller's key, and `/metrics`
+  is always open. That is the product choice, stated loudly: run it
+  on localhost, or behind firewall + TLS with source CIDRs (the
+  Terraform stage does this). There is no shared-secret gate; do not
+  invent one per deploy.
+- Inspector (Iter 29): `/ui` shows ten fixed non-smart virtual combos
+  top-3 plus a custom-model box. Paste the exact `Authorization`
+  header value; the page sends it as the `Authorization` header to
+  `GET /ui/preview?model=<id>&top=N`, which hashes it with the same
+  seeded hash the request path pins with and returns the ordered
+  candidates with every stored column (prices, effective cost,
+  class, tier/score, tools, decisions, promo, free, availability,
+  rank) plus the sticky pick (with this key) vs the fresh pick (no
+  session) and the session hash. The raw key is never logged and
+  never stored; previews never create pins. Plain-request view: tools,
+  budget, and only/ignore constraints are not applied, so a capped
+  request can fail closed where the preview shows a pick. Smart ids
+  preview as an explanatory rejection (their tier comes from the live
+  classifier leg). Missing `model` answers 400, no router answers 503.
 - Catalog: `CATALOG_UI=1 catalog-ui --dir <artifact-dir>
   [--port 8080] [--log-file <path>]` serves a browser over the
   published artifacts: run history (manifests newest-first with
@@ -167,7 +243,11 @@ re-resolves its `CATALOG_DB` directory every `RELOAD_INTERVAL_SECS`
 (default 60s, 0 disables) and atomically publishes the new snapshot
 and ranking, keeping the last good ones when a reload fails or an
 artifact is missing; reload attempts are counted in
-`pennyrouter_catalog_reload_total{result="ok|error"}`.
+`pennyrouter_catalog_reload_total{result="ok|error"}`. Last-good
+retention and joint atomicity are different properties: each of
+snapshot and ranking keeps its own last good copy, but the two swap
+in sequence, so a reader can briefly see a new snapshot with the
+previous ranking.
 From Iter 7, "cheapest" means effective cost under the balanced
 workload profile (see [pricing.md](pricing.md)), and `openrouter/free`
 routes to any free offering.
@@ -199,9 +279,9 @@ From Iter 3: every request logs one JSON line to stdout with request ID
 (incoming `x-request-id` or generated, also echoed back), method, route,
 status, latency, and outcome. `GET /metrics` serves Prometheus counters
 (requests by route/status, upstream errors by kind, guard rejections,
-in-flight gauge) plus a latency histogram. Provider, model, and snapshot
-fields join the log line once routing lands. Never log bodies, prompts,
-completions, or Authorization headers. From Iter 8, fallback-proxied
+in-flight gauge) plus a latency histogram. The chosen provider rides
+the `x-pennyrouter-provider` response header, not the log line.
+Never log bodies, prompts, completions, or Authorization headers. From Iter 8, fallback-proxied
 calls emit an extra `{"fallback_proxy":true,...}` line with method and
 full path (see [api.md](api.md)). Later, readiness/snapshot health
 may complement `/health` without changing its liveness contract.

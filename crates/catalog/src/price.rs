@@ -171,9 +171,10 @@ impl Promos {
         Ok(Self { by_endpoint })
     }
 
-    /// End (`ends_at`) of the last active 100%-off window covering the
-    /// offering at `now` (Iter 11, F11). `None` means no promo makes it
-    /// free right now — permanent catalog zeros are not promo facts.
+    /// End (`ends_at`) of the latest active 100%-off window covering
+    /// the offering at `now` (Iter 11, F11; Q02-A: max expiry, never
+    /// last-in-file). `None` means no promo makes it free right now —
+    /// permanent catalog zeros are not promo facts.
     pub fn free_until(
         &self,
         model_id: &str,
@@ -182,7 +183,7 @@ impl Promos {
         now: &str,
     ) -> Option<String> {
         let now = parse_time(now)?;
-        let mut free_until = None;
+        let mut best: Option<(time::OffsetDateTime, String)> = None;
         if let Some(promos) = self
             .by_endpoint
             .get(&(model_id.to_string(), provider_name.to_string()))
@@ -196,12 +197,16 @@ impl Promos {
                 else {
                     continue;
                 };
-                if start <= now && now < end && promo.discount == 1.0 {
-                    free_until = Some(promo.ends_at.clone());
+                if start <= now
+                    && now < end
+                    && promo.discount == 1.0
+                    && best.as_ref().is_none_or(|(best_end, _)| end > *best_end)
+                {
+                    best = Some((end, promo.ends_at.clone()));
                 }
             }
         }
-        free_until
+        best.map(|(_, ends_at)| ends_at)
     }
 
     /// Active discount for one offering at `now` (RFC 3339), if any promo
@@ -380,6 +385,43 @@ mod tests {
         assert_eq!(
             resolve_discount(&promos, "m", "p", None, None, "2025-12-01T00:00:00Z"),
             0.0
+        );
+    }
+
+    #[test]
+    fn free_until_returns_latest_expiry() {
+        // B08/Q02-A: overlapping 100%-off windows ending Apr then Feb
+        // must publish Apr (max), never last-in-file Feb.
+        let promos = Promos::from_str(
+            r#"{"promos": [
+                {"model_id": "m", "provider_name": "p",
+                 "discount": 1.0, "starts_at": "2026-01-01T00:00:00Z",
+                 "ends_at": "2026-04-01T00:00:00Z"},
+                {"model_id": "m", "provider_name": "p",
+                 "discount": 1.0, "starts_at": "2026-01-01T00:00:00Z",
+                 "ends_at": "2026-02-01T00:00:00Z"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            promos.free_until("m", "p", None, "2026-01-15T00:00:00Z"),
+            Some("2026-04-01T00:00:00Z".to_string())
+        );
+        // And the reverse file order agrees: order never decides.
+        let flipped = Promos::from_str(
+            r#"{"promos": [
+                {"model_id": "m", "provider_name": "p",
+                 "discount": 1.0, "starts_at": "2026-01-01T00:00:00Z",
+                 "ends_at": "2026-02-01T00:00:00Z"},
+                {"model_id": "m", "provider_name": "p",
+                 "discount": 1.0, "starts_at": "2026-01-01T00:00:00Z",
+                 "ends_at": "2026-04-01T00:00:00Z"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            flipped.free_until("m", "p", None, "2026-01-15T00:00:00Z"),
+            Some("2026-04-01T00:00:00Z".to_string())
         );
     }
 

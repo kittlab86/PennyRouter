@@ -11,6 +11,7 @@ mod judge_baseten;
 mod judge_catalog;
 mod judge_modal;
 mod judge_openai;
+mod popular;
 mod price;
 mod process;
 mod rank;
@@ -19,7 +20,7 @@ mod store;
 mod sync;
 
 pub use artifact::{now_rfc3339, publish, sha256_hex, verify, Manifest};
-pub use fetch::{fetch_openrouter, Fetched};
+pub use fetch::{fetch_openrouter, fetch_openrouter_extra, Fetched};
 pub use judge::{
     endpoint_tag, run_judging, run_judging_selected, Judge, JudgeIdentity, JudgeSummary, NullJudge,
     RecordedJudge,
@@ -31,6 +32,10 @@ pub use judge_catalog::{
 };
 pub use judge_modal::ModalJudge;
 pub use judge_openai::PROMPT_VERSION;
+pub use popular::{
+    aggregate_apps, aggregate_models, fetch_popularity, read_popularity, store_popularity,
+    Popularity, POPULAR_APPS_TOP_N, POPULAR_MODELS_TOP_N, RANKINGS_WINDOW_DAYS,
+};
 pub use price::{
     balanced_profile, builtin_profiles, effective_cost, resolve_discount, Promos, WorkloadProfile,
 };

@@ -18,7 +18,7 @@ const BUCKETS: [f64; 14] = [
 ];
 
 /// Fixed route slots keep labels bounded and the hot path free of maps.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Route {
     Health,
     Chat,
@@ -26,6 +26,7 @@ pub enum Route {
     Ui,
     Metrics,
     Other,
+    Decisions,
 }
 
 impl Route {
@@ -33,8 +34,9 @@ impl Route {
         match path {
             "/" => Self::Ui,
             "/health" => Self::Health,
-            "/v1/chat/completions" => Self::Chat,
-            "/v1/responses" => Self::Responses,
+            "/v1/chat/completions" | "/api/v1/chat/completions" => Self::Chat,
+            "/v1/responses" | "/api/v1/responses" => Self::Responses,
+            "/v1/decisions" | "/api/v1/decisions" => Self::Decisions,
             "/ui" => Self::Ui,
             "/metrics" => Self::Metrics,
             _ => Self::Other,
@@ -49,6 +51,7 @@ impl Route {
             Self::Ui => "ui",
             Self::Metrics => "metrics",
             Self::Other => "other",
+            Self::Decisions => "decisions",
         }
     }
 
@@ -60,6 +63,9 @@ impl Route {
             Self::Ui => 3,
             Self::Metrics => 4,
             Self::Other => 5,
+            // Appended last (Iter 27) so existing slot indices —
+            // and any dashboard pinned to them — never shift.
+            Self::Decisions => 6,
         }
     }
 }
@@ -126,8 +132,105 @@ impl RouteMetrics {
     }
 }
 
+/// Classifier outcomes (Iter 26): why a smart request did or did not
+/// get a classified tier. Fixed slots keep the label set bounded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClassifierResult {
+    Ok,
+    Timeout,
+    Invalid,
+    AuthError,
+    Unavailable,
+    NotConfigured,
+    NoInput,
+}
+
+impl ClassifierResult {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Timeout => "timeout",
+            Self::Invalid => "invalid",
+            Self::AuthError => "auth_error",
+            Self::Unavailable => "unavailable",
+            Self::NotConfigured => "not_configured",
+            Self::NoInput => "no_input",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Ok => 0,
+            Self::Timeout => 1,
+            Self::Invalid => 2,
+            Self::AuthError => 3,
+            Self::Unavailable => 4,
+            Self::NotConfigured => 5,
+            Self::NoInput => 6,
+        }
+    }
+}
+
+/// Classified (or fallback) tier slot for classifier metrics. `None`
+/// covers legs that never produced a tier (auth errors, missing
+/// config, empty input).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClassifierTier {
+    Free,
+    Lowest,
+    Low,
+    Think,
+    None,
+}
+
+impl ClassifierTier {
+    pub fn of(tier: &str) -> Self {
+        match tier {
+            "free" => Self::Free,
+            "lowest" => Self::Lowest,
+            "low" => Self::Low,
+            "think" => Self::Think,
+            _ => Self::None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Lowest => "lowest",
+            Self::Low => "low",
+            Self::Think => "think",
+            Self::None => "none",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Free => 0,
+            Self::Lowest => 1,
+            Self::Low => 2,
+            Self::Think => 3,
+            Self::None => 4,
+        }
+    }
+}
+
+const CLASSIFIER_RESULTS: usize = 7;
+const CLASSIFIER_TIERS: usize = 5;
+
+/// One read-only snapshot of classifier state for `GET /ui` (Iter 26):
+/// counts only, no prompts or verdicts.
+pub struct ClassifierSummary {
+    pub counts: Vec<(&'static str, &'static str, u64)>,
+    pub latency_count: u64,
+    pub latency_sum_ms: f64,
+    pub fallback_low: u64,
+    pub fallback_lowest: u64,
+    pub last_error: String,
+}
+
 pub struct Metrics {
-    routes: [RouteMetrics; 6],
+    routes: [RouteMetrics; 7],
     upstream_errors: [AtomicU64; 4],
     guard_rejections: AtomicU64,
     load_shed: AtomicU64,
@@ -136,12 +239,19 @@ pub struct Metrics {
     reload_err: AtomicU64,
     in_flight: AtomicI64,
     request_ids: AtomicU64,
+    classifier_total: [AtomicU64; CLASSIFIER_RESULTS * CLASSIFIER_TIERS],
+    classifier_buckets: [AtomicU64; 14],
+    classifier_sum_micros: AtomicU64,
+    classifier_count: AtomicU64,
+    smart_fallback: [AtomicU64; 2],
+    classifier_last_error: Mutex<String>,
 }
 
 impl Metrics {
     pub fn new() -> Self {
         Self {
             routes: [
+                RouteMetrics::new(),
                 RouteMetrics::new(),
                 RouteMetrics::new(),
                 RouteMetrics::new(),
@@ -157,6 +267,12 @@ impl Metrics {
             reload_err: AtomicU64::new(0),
             in_flight: AtomicI64::new(0),
             request_ids: AtomicU64::new(0),
+            classifier_total: [const { AtomicU64::new(0) }; CLASSIFIER_RESULTS * CLASSIFIER_TIERS],
+            classifier_buckets: [const { AtomicU64::new(0) }; 14],
+            classifier_sum_micros: AtomicU64::new(0),
+            classifier_count: AtomicU64::new(0),
+            smart_fallback: [const { AtomicU64::new(0) }; 2],
+            classifier_last_error: Mutex::new(String::new()),
         }
     }
 
@@ -192,6 +308,83 @@ impl Metrics {
         self.request_ids.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Record one classifier attempt (Iter 26): outcome plus the tier
+    /// it produced (`None` when the leg never yielded one).
+    pub fn classifier_report(&self, result: ClassifierResult, tier: ClassifierTier) {
+        self.classifier_total[result.index() * CLASSIFIER_TIERS + tier.index()]
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one classifier leg latency (attempts and timeouts alike).
+    pub fn classifier_latency(&self, latency: Duration) {
+        let secs = latency.as_secs_f64();
+        for (bound, bucket) in BUCKETS.iter().zip(self.classifier_buckets.iter()) {
+            if secs <= *bound {
+                bucket.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.classifier_sum_micros
+            .fetch_add(latency.as_micros() as u64, Ordering::Relaxed);
+        self.classifier_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one fallback to the configured tier after a classifier
+    /// failure. Only `low`/`lowest` are legal fallback tiers, so the
+    /// slot is a single bit.
+    pub fn smart_fallback(&self, lowest: bool) {
+        self.smart_fallback[usize::from(lowest)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Remember the latest classifier failure for `GET /ui` (bounded:
+    /// first 200 chars, never the prompt or the verdict reasoning).
+    pub fn classifier_error(&self, message: impl Into<String>) {
+        let message: String = message.into().chars().take(200).collect();
+        if let Ok(mut last) = self.classifier_last_error.lock() {
+            *last = message;
+        }
+    }
+
+    /// Read-only classifier snapshot for `GET /ui`.
+    pub fn classifier_summary(&self) -> ClassifierSummary {
+        let mut counts = Vec::with_capacity(CLASSIFIER_RESULTS * CLASSIFIER_TIERS);
+        for result in [
+            ClassifierResult::Ok,
+            ClassifierResult::Timeout,
+            ClassifierResult::Invalid,
+            ClassifierResult::AuthError,
+            ClassifierResult::Unavailable,
+            ClassifierResult::NotConfigured,
+            ClassifierResult::NoInput,
+        ] {
+            for tier in [
+                ClassifierTier::Free,
+                ClassifierTier::Lowest,
+                ClassifierTier::Low,
+                ClassifierTier::Think,
+                ClassifierTier::None,
+            ] {
+                counts.push((
+                    result.label(),
+                    tier.label(),
+                    self.classifier_total[result.index() * CLASSIFIER_TIERS + tier.index()]
+                        .load(Ordering::Relaxed),
+                ));
+            }
+        }
+        ClassifierSummary {
+            counts,
+            latency_count: self.classifier_count.load(Ordering::Relaxed),
+            latency_sum_ms: self.classifier_sum_micros.load(Ordering::Relaxed) as f64 / 1000.0,
+            fallback_low: self.smart_fallback[0].load(Ordering::Relaxed),
+            fallback_lowest: self.smart_fallback[1].load(Ordering::Relaxed),
+            last_error: self
+                .classifier_last_error
+                .lock()
+                .map(|last| last.clone())
+                .unwrap_or_default(),
+        }
+    }
+
     pub fn in_flight_guard(&self) -> InFlightGuard<'_> {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
         InFlightGuard { metrics: self }
@@ -213,7 +406,15 @@ impl Metrics {
         let mut out = String::new();
         out.push_str("# HELP pennyrouter_requests_total Requests handled.\n");
         out.push_str("# TYPE pennyrouter_requests_total counter\n");
-        for route in [Route::Health, Route::Chat, Route::Metrics, Route::Other] {
+        for route in [
+            Route::Health,
+            Route::Chat,
+            Route::Responses,
+            Route::Ui,
+            Route::Metrics,
+            Route::Other,
+            Route::Decisions,
+        ] {
             let metrics = &self.routes[route.index()];
             let counts = metrics
                 .requests_by_status
@@ -234,7 +435,15 @@ impl Metrics {
         }
         out.push_str("# HELP pennyrouter_request_latency_seconds Request latency.\n");
         out.push_str("# TYPE pennyrouter_request_latency_seconds histogram\n");
-        for route in [Route::Health, Route::Chat, Route::Metrics, Route::Other] {
+        for route in [
+            Route::Health,
+            Route::Chat,
+            Route::Responses,
+            Route::Ui,
+            Route::Metrics,
+            Route::Other,
+            Route::Decisions,
+        ] {
             let metrics = &self.routes[route.index()];
             for (bound, bucket) in BUCKETS.iter().zip(metrics.buckets.iter()) {
                 out.push_str(&format!(
@@ -298,6 +507,61 @@ impl Metrics {
             "pennyrouter_upstream_throttled_total {}\n",
             self.throttled.load(Ordering::Relaxed)
         ));
+        out.push_str(
+            "# HELP pennyrouter_classifier_total Classifier attempts by result and tier.\n",
+        );
+        out.push_str("# TYPE pennyrouter_classifier_total counter\n");
+        for result in [
+            ClassifierResult::Ok,
+            ClassifierResult::Timeout,
+            ClassifierResult::Invalid,
+            ClassifierResult::AuthError,
+            ClassifierResult::Unavailable,
+            ClassifierResult::NotConfigured,
+            ClassifierResult::NoInput,
+        ] {
+            for tier in [
+                ClassifierTier::Free,
+                ClassifierTier::Lowest,
+                ClassifierTier::Low,
+                ClassifierTier::Think,
+                ClassifierTier::None,
+            ] {
+                out.push_str(&format!(
+                    "pennyrouter_classifier_total{{result=\"{}\",tier=\"{}\"}} {}\n",
+                    result.label(),
+                    tier.label(),
+                    self.classifier_total[result.index() * CLASSIFIER_TIERS + tier.index()]
+                        .load(Ordering::Relaxed)
+                ));
+            }
+        }
+        out.push_str("# HELP pennyrouter_classifier_latency_seconds Classifier leg latency.\n");
+        out.push_str("# TYPE pennyrouter_classifier_latency_seconds histogram\n");
+        for (bound, bucket) in BUCKETS.iter().zip(self.classifier_buckets.iter()) {
+            out.push_str(&format!(
+                "pennyrouter_classifier_latency_seconds_bucket{{le=\"{bound}\"}} {}\n",
+                bucket.load(Ordering::Relaxed)
+            ));
+        }
+        let classifier_count = self.classifier_count.load(Ordering::Relaxed);
+        let classifier_sum =
+            self.classifier_sum_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        out.push_str(&format!(
+            "pennyrouter_classifier_latency_seconds_bucket{{le=\"+Inf\"}} {classifier_count}\n\
+             pennyrouter_classifier_latency_seconds_sum {classifier_sum:.6}\n\
+             pennyrouter_classifier_latency_seconds_count {classifier_count}\n"
+        ));
+        out.push_str("# HELP pennyrouter_smart_fallback_total Smart fallbacks by tier.\n");
+        out.push_str("# TYPE pennyrouter_smart_fallback_total counter\n");
+        out.push_str(&format!(
+            "pennyrouter_smart_fallback_total{{tier=\"low\"}} {}\n",
+            self.smart_fallback[0].load(Ordering::Relaxed)
+        ));
+        out.push_str(&format!(
+            "pennyrouter_smart_fallback_total{{tier=\"lowest\"}} {}\n",
+            self.smart_fallback[1].load(Ordering::Relaxed)
+        ));
         out.push_str("# HELP pennyrouter_log_dropped_total Log lines dropped on a full buffer.\n");
         out.push_str("# TYPE pennyrouter_log_dropped_total counter\n");
         out.push_str(&format!(
@@ -338,5 +602,40 @@ pub struct OwnedInFlightGuard {
 impl Drop for OwnedInFlightGuard {
     fn drop(&mut self) {
         self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Metrics, Route};
+
+    /// Native aliases share the routed slots (Iter 25): observability
+    /// stays intact, no new label cardinality.
+    #[test]
+    fn native_aliases_share_routed_slots() {
+        assert_eq!(Route::from_path("/api/v1/chat/completions"), Route::Chat);
+        assert_eq!(Route::from_path("/api/v1/responses"), Route::Responses);
+        assert_eq!(Route::from_path("/v1/chat/completions"), Route::Chat);
+        assert_eq!(Route::from_path("/api/v1/credits"), Route::Other);
+        // Decisions alias (Iter 27 follow-up) shares its slot too.
+        assert_eq!(Route::from_path("/api/v1/decisions"), Route::Decisions);
+        assert_eq!(Route::from_path("/v1/decisions"), Route::Decisions);
+    }
+
+    /// B22: observed decisions traffic renders its request and
+    /// latency series — counted but never exported is a silent hole.
+    #[test]
+    fn decisions_route_renders() {
+        let metrics = Metrics::new();
+        metrics.observe(Route::Decisions, 200, std::time::Duration::from_millis(5));
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("pennyrouter_requests_total{route=\"decisions\",status=\"200\"} 1"),
+            "missing decisions request series"
+        );
+        assert!(
+            rendered.contains("pennyrouter_request_latency_seconds_count{route=\"decisions\"} 1"),
+            "missing decisions latency series"
+        );
     }
 }

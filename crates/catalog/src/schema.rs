@@ -1,8 +1,9 @@
-//! Schema v3: fixed core columns + raw JSON payloads + indexed columns
-//! (deterministic from Phase 2a, model-judged from Phase 2b).
+//! Schema v5: fixed core columns + raw JSON payloads + indexed columns
+//! (deterministic from Phase 2a, model-judged from Phase 2b, tool
+//! support from Iter 22, decision-modality support from Iter 24).
 
 /// Current schema version, recorded in `sync_meta` on init.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 5;
 
 pub const DDL: &str = "
 CREATE TABLE IF NOT EXISTS models (
@@ -25,11 +26,14 @@ CREATE TABLE IF NOT EXISTS endpoints (
     precision_class   TEXT,
     promo_discount    REAL,
     processed_at      TEXT,
+    supports_tools    INTEGER,
+    supports_decisions INTEGER,
     quality_tier      TEXT,
     quality_score     REAL,
     judged_at         TEXT,
     judge_model       TEXT,
     judge_prompt      TEXT,
+    price_override_tokens INTEGER,
     FOREIGN KEY (model_id) REFERENCES models(model_id)
 );
 CREATE INDEX IF NOT EXISTS idx_endpoints_model ON endpoints(model_id);
@@ -50,11 +54,14 @@ pub const ENDPOINT_INDEXED_COLUMNS: &[(&str, &str)] = &[
     ("precision_class", "TEXT"),
     ("promo_discount", "REAL"),
     ("processed_at", "TEXT"),
+    ("supports_tools", "INTEGER"),
+    ("supports_decisions", "INTEGER"),
     ("quality_tier", "TEXT"),
     ("quality_score", "REAL"),
     ("judged_at", "TEXT"),
     ("judge_model", "TEXT"),
     ("judge_prompt", "TEXT"),
+    ("price_override_tokens", "INTEGER"),
 ];
 
 /// Phase 1 layout, kept so the migration test can build a legacy DB.

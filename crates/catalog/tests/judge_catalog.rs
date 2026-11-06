@@ -12,8 +12,8 @@ mod common;
 use common::{fixtures_dir, synced_db};
 use pennyrouter_catalog::{
     build_judge, plan_live_calls, run_judging, run_judging_selected, run_processing,
-    select_endpoints, spend_line, BasetenJudge, Catalog, Judge, JudgeCatalog, JudgePolicy,
-    ModalJudge, PROMPT_VERSION,
+    select_endpoints, spend_line, BasetenJudge, Catalog, EndpointRow, Judge, JudgeCatalog,
+    JudgePolicy, ModalJudge, PROMPT_VERSION,
 };
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -317,5 +317,77 @@ fn live_run_stamps_audit_identity_per_row() {
     assert_eq!(
         db.get_meta("judge_model").unwrap().as_deref(),
         Some("audit-model")
+    );
+}
+
+#[test]
+fn sampling_distinguishes_endpoint_tags() {
+    // B20: same (model, provider), different tags. Post-fix FNV
+    // buckets are 0.3102 ("openai") vs 0.9060 ("openai/flex"), so
+    // rate 0.5 keeps exactly one; pre-fix both hash 0.4552 and
+    // select together.
+    let row = |tag: &str| EndpointRow {
+        id: 0,
+        model_id: "m".to_string(),
+        provider_name: "P".to_string(),
+        payload: json!({"tag": tag}).to_string(),
+        fetched_at: "t".to_string(),
+        price_prompt: None,
+        price_completion: None,
+        price_cache_read: None,
+        price_cache_write: None,
+        precision_class: None,
+        promo_discount: None,
+        processed_at: None,
+        supports_tools: None,
+        supports_decisions: None,
+        quality_tier: None,
+        quality_score: None,
+        judged_at: None,
+        judge_model: None,
+        judge_prompt: None,
+        price_override_tokens: None,
+    };
+    let endpoints = vec![row("openai"), row("openai/flex")];
+    let policy = JudgePolicy {
+        sample_rate: 0.5,
+        ..JudgePolicy::default()
+    };
+    let selected = select_endpoints(&endpoints, &policy);
+    assert_eq!(selected.len(), 1);
+    let tag: Value = serde_json::from_str(&selected[0].payload).unwrap();
+    assert_eq!(tag["tag"], json!("openai"));
+    // Deterministic: same input re-samples identically.
+    assert_eq!(select_endpoints(&endpoints, &policy).len(), 1);
+}
+
+#[test]
+fn build_judge_normalizes_modal_root_url() {
+    // B21: a catalog modal entry with a deployment-root base_url
+    // (mirroring MODAL_JUDGE_URL, no /v1 suffix) must still reach
+    // /v1/chat/completions, like ModalJudge::from_env.
+    let catalog = catalog();
+    let mut entry = catalog.resolve("modal").unwrap().clone();
+    let (stub_root, server) = stub_server(vec![chat_response(
+        r#"{"quality_tier": "standard", "quality_score": 0.77}"#,
+    )]);
+    entry.base_url = stub_root;
+    entry.auth_env = vec![
+        "PENNYROUTER_TEST_MODAL_ID".to_string(),
+        "PENNYROUTER_TEST_MODAL_SECRET".to_string(),
+    ];
+    std::env::set_var("PENNYROUTER_TEST_MODAL_ID", "id");
+    std::env::set_var("PENNYROUTER_TEST_MODAL_SECRET", "secret");
+    let judge = build_judge(&entry).unwrap();
+    let out = judge.judge("m", "p", &json!({})).unwrap();
+    std::env::remove_var("PENNYROUTER_TEST_MODAL_ID");
+    std::env::remove_var("PENNYROUTER_TEST_MODAL_SECRET");
+    assert_eq!(out.quality_tier.as_deref(), Some("standard"));
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].starts_with("POST /v1/chat/completions "),
+        "root-style base must gain /v1, got: {}",
+        requests[0].lines().next().unwrap_or("")
     );
 }

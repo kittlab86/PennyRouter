@@ -2,7 +2,8 @@
 
 Rule: each iteration ships one small layer that is testable by itself and
 adds value on its own. Detail and acceptance criteria live in
-[docs/roadmap.md](docs/roadmap.md).
+[docs/roadmap.md](docs/roadmap.md). Status source: TODO checkboxes;
+roadmap headers mirror them in the same commit.
 
 - [x] **Iter 0 — Repo skeleton + docs.** Value: reviewable
       structure, vision, and plan before any code. Test: tree + link audit.
@@ -126,3 +127,70 @@ cheap judge model, classifier-based routing.
       boundary; `FETCH_OPENROUTER=1` flips the container off fixtures.
       Test: stub-server fetch tests; live one-shot synced 456 models /
       1483 endpoints with 18 zero-price offerings.
+- [x] **Iter 19 — `lowest` tag.** Cross-model cheapest-paid pick with
+      no quality floor (fallback when free turns run out); fail-closed
+      rejections, exactly-once. Test: 7 routing unit tests (pick,
+      first-wins, passthrough, fail-closed, budget, tie-break, wire
+      rewrite).
+- [x] **Iter 20 — Decode gzipped upstream errors.** Live-found: gzipped
+      4xx bodies were wrapped raw into error messages. Decode (bounded)
+      on the error path only; success bytes stay untouched. Test: 2
+      passthrough tests (readable wrap, decoded JSON forward without
+      encoding claim).
+- [x] **Iter 21 — Free fallback + header-driven 429s.** `…/free/fallback/
+      <tier>` serves free, then one tier pick on exhaustion; 429s cool
+      offerings for the header-stated duration and surface reset info.
+      Test: unit (headers, parse, triggers) + 2 integration (fallback
+      200, 429 headers). Live: fallback chain serves DeepInfra paid
+      pick on constrained trigger.
+- [x] **Iter 22 — Tool-aware routing.** Index per-endpoint tool
+      support (`supported_parameters` → `supports_tools`, schema v4);
+      tool-bearing requests match only capable endpoints on every
+      leg; starvation fails closed with `tools_unsupported` (400).
+      Test: extraction asserts (1/0/NULL) + unit (detect/allow) + 2
+      integration (routes capable, fails closed).
+- [x] **Iter 23 — Standby router recovery.** Boot against an
+      unloadable catalog attaches an empty standby router; the
+      periodic reload heals it when a good artifact lands.
+      Test: standby-heals integration (passthrough → routed, ready).
+- [x] **Iter 24 — Decision tier.** `openrouter/pair/decision[/free]`
+      routes decisions-capable offerings (schema v5 index from model
+      modality); `decision/free/fallback/<tier>` falls back past
+      exhaustion; `EXTRA_MODEL_IDS` syncs unlisted models.
+      Test: extraction trio + fetch merge + parse + 3 integration
+      (route, fallback, fail-closed).
+- [x] **Iter 25 — OpenRouter-native interface.** `/api/v1/chat/completions`
+      + `/api/v1/responses` alias to the routed handler; native fallback
+      paths compose against the upstream root (no double `/api`);
+      management writes deny by default (`ALLOW_MANAGEMENT_PROXY=1` opts
+      in). Test: `tests/openrouter_native.rs` + metrics unit test;
+      `cargo test`, clippy, fmt clean.
+- [x] **Iter 26 — Smart classifier.** `openrouter/pair/smart[/max]`
+      (+ `privacy/` variants) picks a tier per request via one
+      decision-model leg (`free`/`lowest`/`low`, plus `think` on
+      `smart/max`), then the normal tier dispatch with no session
+      pinning; fail-closed when unconfigured, marked fallback tier
+      otherwise, rejected tiers never re-picked; classifier metrics +
+      `/ui` panel. Test: `crates/gateway/tests/smart_classifier.rs`
+      (16 integration over mock classifier + mock upstream) +
+      classifier/verdict + routing unit tests. `cargo test`, clippy,
+      fmt clean.
+- [x] **Iter 27 — Decisions route.** `POST /v1/decisions` forwards
+      model-rewritten bodies to the upstream alpha endpoint with
+      retry + decision-only fallback. Test: 5 integration (route,
+      fail-closed, passthrough, fallback, wrong-target).
+- [x] **Iter 28 — Pinned-model routes.** `openrouter/pair/model/<id>`
+      (+ `privacy/model/<id>`) pins to one specific catalog model and
+      picks the best provider for it — ranking/cost, throttle skip,
+      budget caps, tool filter, `.../fallback/<tier>` all scope to that
+      model's offerings. Test: parse + integration (route/fallback/
+      budget/tool/throttle/privacy/unknown).
+- [x] **Iter 29 — Routing inspector.** `GET /ui` inspector + `GET
+      /ui/preview?model=<id>&top=N` (behind `GATEWAY_UI=1`): fixed
+      non-smart virtual combos top-3 plus a custom-model box, every
+      stored column (prices, effective cost, class, tier/score, tools,
+      decisions, promo, free, availability, rank) with sticky-vs-fresh
+      picks and the session hash. Key travels as `Authorization`,
+      never logged/stored; previews never pin. Test: `tests/ui.rs`
+      preview suite (ordering, sticky/fresh, no-pin, throttle,
+      disabled gate, page content).

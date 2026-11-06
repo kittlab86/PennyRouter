@@ -353,6 +353,9 @@ fn policy_from(policy: &Value) -> Result<JudgePolicy, Error> {
 
 /// Deterministic FNV-1a membership: the same endpoint samples the
 /// same way on every rebuild, independent of catalog order or size.
+/// Keyed by model + provider + tag: same-provider tag variants are
+/// distinct endpoints and must sample independently (the DB `id`
+/// would do it too, but re-sync reassigns ids every cycle).
 fn sampled(endpoint: &EndpointRow, rate: f64) -> bool {
     if rate >= 1.0 {
         return true;
@@ -360,12 +363,19 @@ fn sampled(endpoint: &EndpointRow, rate: f64) -> bool {
     if rate <= 0.0 {
         return false;
     }
+    // Unparseable or untagged payloads share the untagged bucket.
+    let tag = serde_json::from_str::<Value>(&endpoint.payload)
+        .ok()
+        .and_then(|payload| crate::judge::endpoint_tag(&payload).map(str::to_string))
+        .unwrap_or_default();
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in endpoint
         .model_id
         .bytes()
         .chain([0])
         .chain(endpoint.provider_name.bytes())
+        .chain([0])
+        .chain(tag.bytes())
     {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
@@ -473,8 +483,11 @@ pub fn build_judge(entry: &JudgeEntry) -> Result<Box<dyn crate::judge::Judge>, E
         }
         "modal" => {
             let vars = read_auth(entry, 2)?;
+            // B21: accept deployment-root URLs like from_env (a
+            // /v1-suffixed entry passes through unchanged).
+            let base_url = crate::judge_modal::api_root(&entry.base_url);
             Ok(Box::new(ModalJudge::new(
-                &entry.base_url,
+                &base_url,
                 &vars[0],
                 &vars[1],
                 &entry.model,

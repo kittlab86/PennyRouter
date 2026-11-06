@@ -32,6 +32,35 @@ fn esc(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Percent-encode a query-string value (RFC 3986 unreserved set):
+/// model ids contain `/`, and may contain `& + % #`, all of which
+/// would corrupt the `model=` filter if emitted raw. Tiny local
+/// encoder — no new dependency. Output is HTML-safe as-is.
+fn url_encode(text: &str) -> String {
+    const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+    let mut out = String::with_capacity(text.len());
+    for byte in text.as_bytes() {
+        if UNRESERVED.contains(byte) {
+            out.push(*byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Adaptive price rendering: fixed 7 decimals down to 1e-7, then
+/// scientific — `4.4e-8` must never print as `0.0000000` (looks free).
+fn fmt_price(value: f64) -> String {
+    if value == 0.0 {
+        "0".to_string()
+    } else if value.abs() >= 1e-7 {
+        format!("{value:.7}")
+    } else {
+        format!("{value:.2e}")
+    }
+}
+
 fn shell(title: &str, nav: &str, body: String) -> String {
     format!(
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -172,7 +201,7 @@ async fn models(State(state): State<Arc<UiState>>) -> Html<String> {
             for (model, count) in &by_model {
                 body.push_str(&format!(
                     "<tr><td><a href=\"/endpoints?model={}\">{}</a></td><td>{count}</td></tr>",
-                    esc(model),
+                    url_encode(model),
                     esc(model),
                 ));
             }
@@ -223,10 +252,10 @@ async fn endpoints(
                     esc(&ep.provider_name),
                     esc(tag.as_deref().unwrap_or("-")),
                     ep.price_prompt
-                        .map(|v| format!("{v:.7}"))
+                        .map(fmt_price)
                         .unwrap_or_else(|| "-".to_string()),
                     ep.price_completion
-                        .map(|v| format!("{v:.7}"))
+                        .map(fmt_price)
                         .unwrap_or_else(|| "-".to_string()),
                     esc(ep.precision_class.as_deref().unwrap_or("-")),
                     esc(ep.quality_tier.as_deref().unwrap_or("-")),

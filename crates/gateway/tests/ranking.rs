@@ -51,11 +51,14 @@ fn insert_offering(catalog: &Catalog, model: &str, provider: &str, price: f64, t
             precision_class: None,
             promo_discount: None,
             processed_at: None,
+            supports_tools: None,
+            supports_decisions: None,
             quality_tier: None,
             quality_score: None,
             judged_at: None,
             judge_model: None,
             judge_prompt: None,
+            price_override_tokens: None,
         })
         .unwrap();
     let ep = catalog.endpoints_for(model).unwrap().pop().unwrap();
@@ -70,6 +73,9 @@ fn insert_offering(catalog: &Catalog, model: &str, provider: &str, price: f64, t
                 precision_class: None,
                 promo_discount: None,
                 processed_at: "t".to_string(),
+                supports_tools: None,
+                supports_decisions: None,
+                price_override_tokens: None,
             },
         )
         .unwrap();
@@ -123,13 +129,19 @@ fn rank_dir(test: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         ),
     )
     .unwrap();
+    // B18: explicit loads reject over-age rankings, so the fixture is
+    // stamped at test time — a fixed old stamp would (correctly) fail
+    // the staleness gate. This test covers serve/fallback, not age.
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
     let doc = rank_catalog(
         &catalog,
         &Trends::empty(),
         &Assist::load(&assist_path).unwrap(),
         &Promos::empty(),
-        "2026-01-01T00:00:00Z",
-        "2026-01-01T00:00:00Z",
+        &now,
+        &now,
         None,
     )
     .unwrap();
