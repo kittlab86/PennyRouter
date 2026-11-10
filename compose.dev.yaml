@@ -66,7 +66,7 @@ services:
       CATALOG_UI: "1"
       PORT: "8080"
     networks:
-      - proxy
+      - ${PROXY_NETWORK:-caddy-default}
     restart: unless-stopped
 
 volumes:
@@ -74,5 +74,5 @@ volumes:
 
 networks:
   proxy:
-    name: ${PROXY_NETWORK:-nginx-proxy_default}
+    name: ${PROXY_NETWORK:-caddy-default}
     external: true
