@@ -154,10 +154,13 @@ Development delivers Docker images, platform delivers deployments.
 
 - **Now:** Docker local dev + minimal image (Dockerfile + compose added
   in 1a; verified with a local build + `/health` smoke test), plus a
-  dev/prod compose split with `.env` settings (prod pulls the GHCR
-  image, never builds) and an `scp` server deploy (`scripts/deploy.sh`
-  + `make deploy`, gateway only on host port 3000). CI runs secret
-  scanning + Dependabot.
+  server compose file with `.env.dev` + `.env` settings (pulls the
+  GHCR images, never builds; no published ports — served behind the
+  reverse proxy) and an `scp` server deploy (`scripts/deploy.sh`
+  + `make deploy`). A Dockhand variant deploys the same pull-only
+  file as a git stack (push-to-deploy;
+  `scripts/deploy-dockhand.sh` forces a redeploy via the API). CI
+  runs secret scanning + Dependabot.
 - **Docker build + push pipeline:** workflow added in 1a; proven green
   on main (build + push + `/health` smoke) across the v0.1.0–v0.6.0
   merges.

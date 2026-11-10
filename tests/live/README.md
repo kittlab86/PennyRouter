@@ -36,8 +36,9 @@ set -a; . tests/live/.env; set +a
 - The no-keys rule covers gateway *serving* keys: agents carry their
   own backend keys inside each request (pure BYOK).
 - Config keys (catalog judge keys, provider URLs) live in the
-  repo-root `.env`, which `deploy.sh` ships to the server as the
-  remote `.env` (chmod 600). They are never needed in `tests/live/`.
+  repo-root `.env` overlay, which `deploy.sh` merges with `.env.dev`
+  and ships to the server as the remote `.env` (chmod 600). They
+  are never needed in `tests/live/`.
 
 ## Plan
 

@@ -33,7 +33,7 @@ UIs, with Docker and Terraform (Hetzner) deploys. See
 - OpenAI-compatible input; OpenRouter is the first backend target.
 - The incoming request carries the backend serving key (pure BYOK);
   config keys (catalog judge keys, provider URLs) live in the
-  gitignored root `.env`, which deploys ship.
+  gitignored root `.env` overlay over the committed `.env.dev`.
 
 ## Docs
 

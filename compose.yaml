@@ -1,7 +1,12 @@
 # Local development: builds the image from source and runs it.
 # Usage (from the repo root):
-#   cp -n .env.example .env   # once; optional, defaults work without it
-#   docker compose up --build
+#   make dev   # = docker compose --env-file .env.dev [--env-file .env] up --build
+# Same config split as compose.dev.yaml: generic values from the
+# committed .env.dev via `env_file:`, secrets + custom URLs from the
+# gitignored .env overlay via `environment:` (optional — fail-closed
+# defaults apply without it). Local differences: images build from
+# source, ports publish to the host (no reverse proxy on a laptop),
+# and catalog-sync mounts the fixture input dir.
 # The catalog-sync service writes versioned DB artifacts to the shared
 # catalog-data volume, which the gateway mounts read-only.
 services:
@@ -17,23 +22,14 @@ services:
     # http://host.docker.internal:<port>. Harmless for normal dev.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    env_file:
+      - .env.dev
     environment:
-      PORT: ${PORT:-8080}
-      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api}
+      # Secrets + custom URLs only (generic config arrives via
+      # env_file above), interpolated from .env.dev + .env.
       MODAL_BASE_URL: ${MODAL_BASE_URL:-}
-      BASETEN_BASE_URL: ${BASETEN_BASE_URL:-https://inference.baseten.co}
-      GATEWAY_UI: ${GATEWAY_UI:-}
-      CATALOG_DB: ${CATALOG_DB:-/catalog}
-      UPSTREAM_MAX_CONCURRENT: ${UPSTREAM_MAX_CONCURRENT:-64}
-      UPSTREAM_MAX_QUEUED: ${UPSTREAM_MAX_QUEUED:-128}
-      RELOAD_INTERVAL_SECS: ${RELOAD_INTERVAL_SECS:-60}
-      ALLOW_MANAGEMENT_PROXY: ${ALLOW_MANAGEMENT_PROXY:-}
-      CLASSIFIER_MODEL: ${CLASSIFIER_MODEL:-}
-      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-}
-      CLASSIFIER_TIMEOUT_MS: ${CLASSIFIER_TIMEOUT_MS:-8000}
-      CLASSIFIER_FALLBACK_TIER: ${CLASSIFIER_FALLBACK_TIER:-low}
-      CLASSIFIER_MAX_TOKENS: ${CLASSIFIER_MAX_TOKENS:-64}
-      CLASSIFIER_MAX_INPUT_CHARS: ${CLASSIFIER_MAX_INPUT_CHARS:-32000}
+      MODAL_MODELS: ${MODAL_MODELS:-}
+      BASETEN_MODELS: ${BASETEN_MODELS:-}
     volumes:
       - catalog-data:/catalog:ro
   catalog-sync:
@@ -45,10 +41,16 @@ services:
       - catalog-data:/catalog
       # Fixture input until live fetching lands.
       - ./crates/catalog/tests/fixtures:/input:ro
+    env_file:
+      - .env.dev
     environment:
-      SYNC_INTERVAL: ${SYNC_INTERVAL:-3600}
-      FETCH_OPENROUTER: ${FETCH_OPENROUTER:-0}
-      EXTRA_MODEL_IDS: ${EXTRA_MODEL_IDS:-}
+      # Secrets only (generic config arrives via env_file above):
+      # judge backends + popularity-pins Data API key.
+      BASETEN_API_KEY: ${BASETEN_API_KEY:-}
+      MODAL_KEY_ID: ${MODAL_KEY_ID:-}
+      MODAL_KEY_SECRET: ${MODAL_KEY_SECRET:-}
+      MODAL_JUDGE_URL: ${MODAL_JUDGE_URL:-}
+      RANKINGS_API_KEY: ${RANKINGS_API_KEY:-}
     restart: unless-stopped
   # Opt-in catalog browser (Iter 17): only starts with
   #   docker compose --profile ui up catalog-ui

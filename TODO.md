@@ -59,14 +59,22 @@ roadmap headers mirror them in the same commit.
 
 - [x] Docker local dev + minimal image (Dockerfile + compose added in 1a;
       build + `/health` verified locally via `docker build` and compose).
-- [x] Dev/prod compose split with `.env` settings (`compose.yaml`
-      builds locally; `compose.prod.yaml` pulls the `ghcr.io` image
-      with no `build:` section, CI-guarded).
+- [x] Local/server compose files with `.env.dev` + `.env` settings
+      (`compose.yaml` builds locally and publishes ports;
+      `compose.dev.yaml` pulls the `ghcr.io` images with no
+      `build:` section, CI-guarded, proxy-reached with no
+      published ports).
 - [x] `scp` server deploy (`scripts/deploy.sh` + `make deploy`):
-      ships pull-only prod compose + generated `.env`, pulls the
-      `ghcr.io` image, restarts, health-checks; gateway only on
-      host port 3000. `Makefile` covers current common tasks
-      (test/run/dev/build/smoke/load/prod-config).
+      ships pull-only server compose + merged `.env` (`.env.dev`
+      base + `.env` secrets), pulls the `ghcr.io` images,
+      restarts, health-checks via the proxy network (one-off
+      curl container, no host port to probe).
+      `Makefile` covers current common tasks
+      (test/run/dev/build/smoke/load/compose-config).
+- [x] Dockhand git deploy (same pull-only compose file as a git
+      stack, push-to-deploy via repo webhook;
+      `scripts/deploy-dockhand.sh` + `make deploy-dockhand`
+      force a redeploy via the API).
 - [x] Docker build + push pipeline with `/health` smoke check (proven
       green on main across the v0.1.0–v0.6.0 merges, image pushed).
 - [x] Select first cloud provider: Hetzner (see

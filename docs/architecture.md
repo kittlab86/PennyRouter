@@ -120,11 +120,12 @@ PennyRouter/
     live/                 # live agent validation (hosts-only config + scripts)
   docs/                   # this folder
   docker/                 # Dockerfiles + entrypoints
-  scripts/                # deploy.sh
+  scripts/                # deploy.sh deploy-dockhand.sh
   terraform/              # Hetzner deployment
-  compose.yaml            # local dev (builds from source)
-  compose.dev.yaml        # server dev stack (pulls GHCR images, no build)
-  compose.prod.yaml       # server gateway-only (pulls GHCR image, no build)
+  compose.yaml            # local dev (builds from source, publishes ports)
+  compose.dev.yaml        # server stack (pulls GHCR images; proxy net, no ports)
   compose.perf.yaml       # resource-capped perf profile
-  .env.example            # settings template (copy to .env; deploys ship .env)
+  .env.example            # canonical settings template (documents all vars)
+  .env.dev                # committed dev values (generic only)
+  .env                    # gitignored overlay: secrets + custom URLs
 ```

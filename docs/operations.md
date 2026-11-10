@@ -10,51 +10,75 @@ cargo run -p pennyrouter-gateway   # serves :8080, PORT=... to override
 curl localhost:8080/health         # {"status":"ok"}
 ```
 
-Settings live in `.env` (copy [`.env.example`](../.env.example)); every
-variable has a sane default so the commands below also work without one.
+Settings come in three files: [`.env.example`](../.env.example)
+(documents every variable), the committed `.env.dev` (working dev
+values, generic only), and the gitignored `.env` overlay (secrets +
+custom URLs only). Every variable has a sane default so the commands
+below also work without any of them.
 
 ```sh
-cp -n .env.example .env                 # once; optional
-docker compose up --build               # local dev: builds from source
+make dev   # local dev: builds from source (loads .env.dev + .env)
 ```
 
 Server deployment pulls the CI-built images from GitHub Packages
 and never builds — one command copies the pull-only compose file
-plus the repo-root `.env` to the server, pulls, restarts, and
-health-checks:
+plus a merged `.env` (`.env.dev` base overlaid with `.env`
+secrets) to the server, pulls, restarts, and health-checks.
+`compose.dev.yaml` loads generic config from the repo's `.env.dev`
+via `env_file:` and takes secrets from `environment:`
+interpolation, so the scp deploy also ships the base file as
+`.env.dev` whenever the compose file references it:
 
 ```sh
 DEPLOY_HOST=user@example.com make deploy   # or ./scripts/deploy.sh
 ```
 
-A dev deployment ships both services (gateway + catalog-sync) from
-the same pull-only images under its own directory and host port:
-
-```sh
-COMPOSE_FILE=compose.dev.yaml DEPLOY_DIR=/opt/stacks/pennyrouter-dev \
-  HOST_PORT=8003 DEPLOY_HOST=user@example.com ./scripts/deploy.sh
-```
+The server stack publishes no ports: gateway and catalog-ui join
+the front-proxy network (`PROXY_NETWORK`, default
+`nginx-proxy_default`, which must already exist on the host) and
+expose 8080 there, so create Nginx Proxy Manager hosts for
+`gateway:8080` and `catalog-ui:8080` (stable container names).
+Container port is 8080 everywhere — `PORT` in `.env.dev` must stay
+8080. The post-deploy health check runs from a one-off curl
+container on that same network, since there is no host port to
+probe.
 
 Deploy targets are env vars (see the header of
 [`scripts/deploy.sh`](../scripts/deploy.sh)): `DEPLOY_HOST`
 (default `apps.lan`), `DEPLOY_DIR` (default
 `/opt/stacks/pennyrouter`), `COMPOSE_FILE` (default
-`compose.dev.yaml`); app config comes from the shipped root `.env`.
+`compose.dev.yaml`); app config comes from the merged shipped
+`.env` (base `DEPLOY_ENV_FILE`, default `.env.dev`, plus secrets
+overlay `DEPLOY_SECRETS_FILE`, default `.env`).
 `DRY_RUN=1` prints what would run (env redacted) without touching
 the server. The dev compose file runs `catalog-sync` beside the
 gateway on the shared volume; it is still a separate process that
 shares only the versioned DB artifact (see
-[architecture.md](architecture.md)). `compose.prod.yaml` is
-gateway-only but mounts the same volume at `CATALOG_DB=/catalog`:
-the separately-deployed catalog-sync ships artifacts there, and an
-empty volume means standby passthrough until the first one lands
-(Q14-A). All gateway env (`UPSTREAM_MAX_*`, `RELOAD_INTERVAL_SECS`,
-`ALLOW_MANAGEMENT_PROXY`, `CLASSIFIER_*`) is forwarded in all three
-compose files with code defaults, so shipped `.env` values apply.
+[architecture.md](architecture.md)). Both compose files load generic
+config from `.env.dev` via `env_file:` and take secrets + custom
+URLs from `environment:` interpolation, with code defaults behind
+every variable. An empty catalog volume means standby passthrough
+until the first artifact lands.
+
+On hosts managed by [Dockhand](https://dockhand.pro) the same
+pull-only files deploy as git stacks instead: create a stack from
+this repo (branch `main`, compose path `compose.dev.yaml`, env file
+`.env.dev`), paste the secret/custom-URL values from the local `.env`
+into the stack environment, and enable the stack webhook on the repo —
+then `git push` deploys. `compose.dev.yaml` reads that same file via
+`env_file:` for generic config and interpolates its small
+`environment:` block (secrets + custom URLs) from the stack
+environment, so nothing needs duplicating into the compose file. [`scripts/deploy-dockhand.sh`](../scripts/deploy-dockhand.sh)
+(`make deploy-dockhand`) forces a redeploy through the Dockhand
+API without pushing (`POST /api/git/stacks/{id}/deploy-stream`
+with a `dh_...` token; a `webhook` mode replays the stack
+webhook, which skips when no new commits landed). Either deploy
+method per host, never both — both stacks use the same container
+names.
 
 CI builds `ghcr.io/lsk242/pennyrouter:latest` and smoke-tests `/health`
 on every PR, and pushes it on merges to main. It also rejects any
-`build:` section in `compose.prod.yaml`, keeping deploys pull-only.
+`build:` section in `compose.dev.yaml`, keeping deploys pull-only.
 
 ## Local development
 
@@ -78,9 +102,12 @@ Docker-based local dev (see `docker/`):
 
 ## Configuration
 
-Keep config minimal and env-based (`.env`, see [`.env.example`](../.env.example)):
-`PORT` (container port), `HOST_PORT` (published port), `IMAGE` (dev:
-tag for the local build; prod: image to pull), `OPENROUTER_BASE_URL`
+Keep config minimal and env-based (`.env.dev` + `.env` overlay,
+see [`.env.example`](../.env.example)):
+`PORT` (container port, 8080 everywhere on the server stack),
+`HOST_PORT` (local-dev published port; the server stack publishes
+nothing), `IMAGE` (local: tag for the build; server: image to
+pull), `OPENROUTER_BASE_URL`
 (upstream for chat completions, default `https://openrouter.ai/api`),
 `MODAL_BASE_URL` (upstream for `modal/…` routes, unset by default),
 `BASETEN_BASE_URL` (upstream for `baseten/…` routes, default
