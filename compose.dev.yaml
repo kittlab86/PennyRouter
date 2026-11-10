@@ -32,8 +32,6 @@ services:
       BASETEN_MODELS: ${BASETEN_MODELS:-}
     volumes:
       - catalog-data:/catalog:ro
-    networks:
-      - proxy
     restart: unless-stopped
   catalog-sync:
     image: ${CATALOG_IMAGE:-ghcr.io/lsk242/pennyrouter-catalog:latest}
@@ -65,14 +63,7 @@ services:
     environment:
       CATALOG_UI: "1"
       PORT: "8080"
-    networks:
-      - proxy
     restart: unless-stopped
 
 volumes:
   catalog-data:
-
-networks:
-  proxy:
-    name: ${PROXY_NETWORK:-caddy_default}
-    external: true
