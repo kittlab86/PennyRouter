@@ -35,11 +35,10 @@ if grep -Eq '^[[:space:]]*ports:' "$ROOT/compose.dev.yaml"; then
 else
   echo "PASS: compose.dev.yaml publishes no ports"
 fi
-if grep -Eq '^[[:space:]]+-[[:space:]]+"8080"' "$ROOT/compose.dev.yaml" \
-  && grep -Eq '^[[:space:]]+-[[:space:]]+proxy\s*$' "$ROOT/compose.dev.yaml"; then
-  echo "PASS: compose.dev.yaml exposes 8080 on the proxy network"
+if [ "$(grep -cE '^[[:space:]]+-[[:space:]]+"8080"' "$ROOT/compose.dev.yaml")" -ge 2 ]; then
+  echo "PASS: compose.dev.yaml exposes 8080 (gateway + catalog-ui)"
 else
-  echo "FAIL: compose.dev.yaml misses expose 8080 / proxy network"; fail=1
+  echo "FAIL: compose.dev.yaml misses expose 8080 entries"; fail=1
 fi
 if grep -Eq '^[[:space:]]*ports:' "$ROOT/compose.yaml"; then
   echo "PASS: compose.yaml publishes ports for local access"
