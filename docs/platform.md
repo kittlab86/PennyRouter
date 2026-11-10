@@ -12,9 +12,10 @@ longer than one iteration.
    GHCR images — compose file plus merged `.env` (`.env.dev` base +
    `.env` secrets) on the server, no build there, no published
    ports: gateway + catalog-ui sit on the front-proxy network
-   behind the reverse proxy. On Dockhand hosts the same pull-only
+   behind the reverse proxy. On git-stack hosts the same pull-only
    file deploys as a git stack (push-to-deploy;
-   `scripts/deploy-dockhand.sh` forces a redeploy via the API).
+   `scripts/deploy-webhook.sh` triggers a redeploy via a
+   configured API endpoint).
 2. **First cloud provider (now): Hetzner.** Selected from the
    six-provider comparison ([cloud-providers.md](cloud-providers.md)).
    Terraform-managed (`terraform/hetzner`): CCX13 VM, primary IPv4,
@@ -33,7 +34,7 @@ longer than one iteration.
   serving keys travel with requests (see [api.md](api.md)); config
   keys live in the gitignored root `.env` overlay — merged into the
   shipped file (chmod 600 on the server) by `deploy.sh`, or pasted
-  into the Dockhand stack env.
+  into the stack-manager env.
 
 ## Delivery pipeline (CI/CD)
 

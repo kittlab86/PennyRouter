@@ -20,6 +20,9 @@ rustc-ice-*.txt
 # Only `.env` is ignored: `.env.dev` and `.env.example` are committed
 # on purpose (generic values + template, no secrets).
 .env
+# Local deploy settings (hosts/URLs, may hold tokens). The
+# `.env.deploy.sample` template is committed; the real file is not.
+.env.deploy
 
 # Load-test evidence (keep the harness, not raw outputs)
 tests/load/results/*

@@ -12,11 +12,13 @@
 # the no-keys rule covers gateway *serving* keys only, which stay pure
 # BYOK inside each request. The remote `.env` is chmod 600.
 #
-# For the Dockhand git-based deploy (push-to-deploy + API force), see
-# scripts/deploy-dockhand.sh. Run only one deploy method per host —
+# For the git-based deploy (push-to-deploy + webhook force), see
+# scripts/deploy-webhook.sh. Run only one deploy method per host —
 # both stacks use the same container names.
 #
-# Configuration (all via environment):
+# Configuration (all via environment, or the gitignored `.env.deploy`
+# file — see `.env.deploy.sample` — which loads automatically when
+# present; explicit environment wins over file values):
 #   DEPLOY_HOST          ssh target, e.g. user@example.com. Default: apps.lan.
 #   DEPLOY_DIR           Remote directory. Default: /opt/stacks/pennyrouter.
 #   COMPOSE_FILE         Local compose file to ship. Default: compose.dev.yaml
@@ -48,6 +50,26 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Local deploy config (gitignored `.env.deploy`, see
+# `.env.deploy.sample`): fills variables that are not already set,
+# so explicit environment wins over file values. No shell expansion
+# and no inline comments in the file; one `KEY=value` per line,
+# optional surrounding quotes.
+if [[ -f "$ROOT/.env.deploy" ]]; then
+  while IFS='=' read -r key val || [[ -n "$key" ]]; do
+    key="${key//[[:space:]]/}"
+    case "$key" in ''|\#*) continue ;; esac
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    if [[ -z "${!key+x}" ]]; then
+      val="${val%$'\r'}"
+      val="${val%\"}"; val="${val#\"}"
+      val="${val%\'}"; val="${val#\'}"
+      printf -v "$key" '%s' "$val"
+      export "$key"
+    fi
+  done < "$ROOT/.env.deploy"
+fi
 
 DEPLOY_HOST="${DEPLOY_HOST:-apps.lan}"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/stacks/pennyrouter}"

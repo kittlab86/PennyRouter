@@ -44,7 +44,10 @@ container on that same network, since there is no host port to
 probe.
 
 Deploy targets are env vars (see the header of
-[`scripts/deploy.sh`](../scripts/deploy.sh)): `DEPLOY_HOST`
+[`scripts/deploy.sh`](../scripts/deploy.sh)), or the gitignored
+`.env.deploy` file (see [`.env.deploy.sample`](../.env.deploy.sample)),
+which both scripts load automatically when present — explicit
+environment still wins over file values: `DEPLOY_HOST`
 (default `apps.lan`), `DEPLOY_DIR` (default
 `/opt/stacks/pennyrouter`), `COMPOSE_FILE` (default
 `compose.dev.yaml`); app config comes from the merged shipped
@@ -60,21 +63,23 @@ URLs from `environment:` interpolation, with code defaults behind
 every variable. An empty catalog volume means standby passthrough
 until the first artifact lands.
 
-On hosts managed by [Dockhand](https://dockhand.pro) the same
-pull-only files deploy as git stacks instead: create a stack from
-this repo (branch `main`, compose path `compose.dev.yaml`, env file
-`.env.dev`), paste the secret/custom-URL values from the local `.env`
-into the stack environment, and enable the stack webhook on the repo —
+On hosts with a git-stack manager the same pull-only file deploys
+as a git stack instead: create a stack from this repo (branch
+`main`, compose path `compose.dev.yaml`, env file `.env.dev`),
+paste the secret/custom-URL values from the local `.env` into the
+stack environment, and enable the stack webhook on the repo —
 then `git push` deploys. `compose.dev.yaml` reads that same file via
 `env_file:` for generic config and interpolates its small
 `environment:` block (secrets + custom URLs) from the stack
-environment, so nothing needs duplicating into the compose file. [`scripts/deploy-dockhand.sh`](../scripts/deploy-dockhand.sh)
-(`make deploy-dockhand`) forces a redeploy through the Dockhand
-API without pushing (`POST /api/git/stacks/{id}/deploy-stream`
-with a `dh_...` token; a `webhook` mode replays the stack
-webhook, which skips when no new commits landed). Either deploy
-method per host, never both — both stacks use the same container
-names.
+environment, so nothing needs duplicating into the compose file.
+[`scripts/deploy-webhook.sh`](../scripts/deploy-webhook.sh)
+(`make deploy-webhook`) POSTs a JSON payload to a configured
+endpoint to force a redeploy without pushing, e.g.
+`DEPLOY_URL=http://<host>:3000/api/stacks/<id>/sync` with
+`DEPLOY_PAYLOAD='{"pull":true,"forceRecreate":true}'`
+(`DEPLOY_API_TOKEN` adds a bearer token when set, omitted when
+empty). Either deploy method per host, never both — both stacks
+use the same container names.
 
 CI builds `ghcr.io/lsk242/pennyrouter:latest` and smoke-tests `/health`
 on every PR, and pushes it on merges to main. It also rejects any

@@ -71,10 +71,10 @@ roadmap headers mirror them in the same commit.
       curl container, no host port to probe).
       `Makefile` covers current common tasks
       (test/run/dev/build/smoke/load/compose-config).
-- [x] Dockhand git deploy (same pull-only compose file as a git
+- [x] Git-stack deploy (same pull-only compose file as a git
       stack, push-to-deploy via repo webhook;
-      `scripts/deploy-dockhand.sh` + `make deploy-dockhand`
-      force a redeploy via the API).
+      `scripts/deploy-webhook.sh` + `make deploy-webhook`
+      trigger a redeploy via a configured API endpoint).
 - [x] Docker build + push pipeline with `/health` smoke check (proven
       green on main across the v0.1.0–v0.6.0 merges, image pushed).
 - [x] Select first cloud provider: Hetzner (see

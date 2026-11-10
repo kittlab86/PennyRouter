@@ -120,7 +120,7 @@ PennyRouter/
     live/                 # live agent validation (hosts-only config + scripts)
   docs/                   # this folder
   docker/                 # Dockerfiles + entrypoints
-  scripts/                # deploy.sh deploy-dockhand.sh
+  scripts/                # deploy.sh deploy-webhook.sh
   terraform/              # Hetzner deployment
   compose.yaml            # local dev (builds from source, publishes ports)
   compose.dev.yaml        # server stack (pulls GHCR images; proxy net, no ports)
@@ -128,4 +128,5 @@ PennyRouter/
   .env.example            # canonical settings template (documents all vars)
   .env.dev                # committed dev values (generic only)
   .env                    # gitignored overlay: secrets + custom URLs
+  .env.deploy.sample      # deploy script settings template
 ```

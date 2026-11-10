@@ -4,14 +4,14 @@
 # front-proxy network and expose 8080 there (proxy hosts reach
 # gateway:8080 and catalog-ui:8080; stable container names). The
 # network must already exist on the host (it belongs to the proxy
-# stack). Deployed by scripts/deploy.sh (scp + pull) or as a Dockhand
-# git stack (compose file path = compose.dev.yaml).
+# stack). Deployed by scripts/deploy.sh (scp + pull) or as a git
+# stack (compose file path = compose.dev.yaml).
 # Config splits two ways: generic values load from the repo's
 # `.env.dev` via `env_file:` (shipped beside compose.yaml by the scp
-# deploy, present from git on Dockhand); secrets + custom URLs come
-# from `environment:` interpolation (shipped merged `.env` on scp,
-# stack environment on Dockhand — `environment:` wins over
-# `env_file:` on conflicts).
+# deploy, present from git on git-stack hosts); secrets + custom URLs
+# come from `environment:` interpolation (shipped merged `.env` on
+# scp, stack environment on git-stack hosts — `environment:` wins
+# over `env_file:` on conflicts).
 # Container port is 8080 everywhere (`expose` is static): PORT in
 # .env.dev must stay 8080 — the gateway listens on $PORT.
 services:
@@ -25,7 +25,7 @@ services:
     environment:
       # Secrets + custom URLs only (generic config arrives via
       # env_file above). Interpolated from the project env: the
-      # shipped merged .env on scp deploys, the Dockhand stack
+      # shipped merged .env on scp deploys, the stack-manager
       # environment on git deploys.
       MODAL_BASE_URL: ${MODAL_BASE_URL:-}
       MODAL_MODELS: ${MODAL_MODELS:-}

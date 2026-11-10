@@ -157,10 +157,10 @@ Development delivers Docker images, platform delivers deployments.
   server compose file with `.env.dev` + `.env` settings (pulls the
   GHCR images, never builds; no published ports — served behind the
   reverse proxy) and an `scp` server deploy (`scripts/deploy.sh`
-  + `make deploy`). A Dockhand variant deploys the same pull-only
+  + `make deploy`). A git-stack variant deploys the same pull-only
   file as a git stack (push-to-deploy;
-  `scripts/deploy-dockhand.sh` forces a redeploy via the API). CI
-  runs secret scanning + Dependabot.
+  `scripts/deploy-webhook.sh` triggers a redeploy via a
+  configured API endpoint). CI runs secret scanning + Dependabot.
 - **Docker build + push pipeline:** workflow added in 1a; proven green
   on main (build + push + `/health` smoke) across the v0.1.0–v0.6.0
   merges.
