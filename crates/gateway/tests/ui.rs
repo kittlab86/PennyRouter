@@ -588,7 +588,10 @@ async fn ui_prices_render_per_million_tokens() {
                     price_cache_write: cheap.price_cache_write,
                     precision_class: Some("unknown".to_string()),
                     promo_discount: cheap.promo_discount,
-                    processed_at: cheap.processed_at.clone().unwrap_or_else(|| "t".to_string()),
+                    processed_at: cheap
+                        .processed_at
+                        .clone()
+                        .unwrap_or_else(|| "t".to_string()),
                     supports_tools: cheap.supports_tools,
                     supports_decisions: cheap.supports_decisions,
                     price_override_tokens: cheap.price_override_tokens,
