@@ -74,5 +74,5 @@ volumes:
 
 networks:
   proxy:
-    name: ${PROXY_NETWORK:-caddy-default}
+    name: ${PROXY_NETWORK:-caddy_default}
     external: true
