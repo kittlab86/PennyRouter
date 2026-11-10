@@ -77,6 +77,10 @@ pub struct Offering {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub models: HashMap<String, Vec<Offering>>,
+    /// Artificial Analysis coding index per model where known
+    /// (Iter 31): loaded for display and future filters; routing
+    /// ignores it until a consumer lands.
+    pub aa_coding_index: HashMap<String, i64>,
     pub artifact_version: Option<String>,
     /// Pinned popular slugs (`openrouter/<slug>` menu ids) from the
     /// catalog's Data API fetch; empty on old/keyless artifacts.
@@ -877,8 +881,12 @@ impl Router {
         // keyless syncs); the menu and `/ui` read them from here.
         let (popular_models, popular_apps, popular_as_of) =
             pennyrouter_catalog::read_popularity(&catalog);
+        let aa_coding_index = catalog
+            .aa_coding_map()
+            .map_err(|e| RouteError(e.to_string()))?;
         Ok(Snapshot {
             models,
+            aa_coding_index,
             artifact_version,
             popular_models,
             popular_apps,
@@ -1587,7 +1595,7 @@ impl Router {
     }
 
     /// Quality-tier floor per virtual tier (Iter 14): `low` needs a
-    /// judged tier (unknown quality promises nothing basic); `think`
+    /// scored tier (unknown quality promises nothing basic); `think`
     /// needs `high`. Unmet floors reject instead of silently serving
     /// below the promise.
     fn tier_floor(tier: VirtualTier) -> u8 {
@@ -1596,7 +1604,7 @@ impl Router {
             VirtualTier::Low => 1,
             VirtualTier::Think => 3,
             // Decision never routes through the floored ordered path
-            // (it has its own pick without a judged floor, like
+            // (it has its own pick without a scored floor, like
             // `lowest`); the arm exists for exhaustiveness.
             VirtualTier::Decision => 0,
             // Smart modes never reach the ordered path either (their
@@ -1758,7 +1766,7 @@ impl Router {
     /// paid priceable offering with a known precision class, no
     /// quality floor — the fallback when free turns run out. Same
     /// filters, budget, throttle, stickiness, and deterministic
-    /// tie-breaks as the `low` tier, minus the judged-tier floor.
+    /// tie-breaks as the `low` tier, minus the scored-tier floor.
     /// Exactly-once: tags never retry, only virtual ids do.
     fn decide_lowest(
         &self,
@@ -1866,7 +1874,7 @@ impl Router {
     /// Cross-model pick for the `decision` tier (Iter 24): cheapest
     /// decisions-capable offering (behavior-scoring models), any cost
     /// by default, zero-cost only under the `/free` scope. No quality
-    /// floor (decision models are unjudged, like `lowest`) and no
+    /// floor (decision models are unscored, like `lowest`) and no
     /// precision-class requirement (scoring endpoints report
     /// `unknown` quantization; capability match replaces it). Same
     /// tool, budget, throttle, stickiness, and deterministic
@@ -2339,7 +2347,8 @@ pub struct UiClassRanking {
 #[derive(Debug, Clone)]
 pub struct UiSummary {
     pub artifact_version: Option<String>,
-    pub models: Vec<(String, Vec<UiOffering>)>,
+    /// Per model: id, AA coding index where known (Iter 31), offerings.
+    pub models: Vec<(String, Option<i64>, Vec<UiOffering>)>,
     pub ranking: Vec<(String, Vec<UiClassRanking>)>,
     pub free_offers: Vec<(String, String, Option<String>, Option<u64>)>,
 }
@@ -2350,10 +2359,11 @@ impl Router {
     /// beyond a clone.
     pub fn ui_summary(&self) -> UiSummary {
         let snapshot = self.snapshot.read().unwrap_or_else(|e| e.into_inner());
-        let mut models: Vec<(String, Vec<UiOffering>)> = snapshot
+        let mut models: Vec<(String, Option<i64>, Vec<UiOffering>)> = snapshot
             .models
             .iter()
             .map(|(model_id, offerings)| {
+                let coding = snapshot.aa_coding_index.get(model_id).copied();
                 let mut entries: Vec<UiOffering> = offerings
                     .iter()
                     .map(|o| UiOffering {
@@ -2367,7 +2377,7 @@ impl Router {
                     })
                     .collect();
                 entries.sort_by(|a, b| a.provider.cmp(&b.provider));
-                (model_id.clone(), entries)
+                (model_id.clone(), coding, entries)
             })
             .collect();
         models.sort_by(|a, b| a.0.cmp(&b.0));
@@ -3992,6 +4002,7 @@ mod tests {
                 ),
             ]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4109,6 +4120,7 @@ mod tests {
                 ),
             ]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4145,6 +4157,7 @@ mod tests {
                 ),
             ]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4179,6 +4192,7 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4267,6 +4281,7 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4294,6 +4309,7 @@ mod tests {
                     ),
                 ]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -4327,6 +4343,7 @@ mod tests {
                         vec![priced("m/one", "Promo", 5.0, Some("high"))],
                     )]),
                     artifact_version: None,
+                    aa_coding_index: HashMap::new(),
                     popular_models: Vec::new(),
                     popular_apps: Vec::new(),
                     popular_as_of: None,
@@ -4375,6 +4392,7 @@ mod tests {
                     vec![priced("m/one", "Promo", 5.0, Some("high"))],
                 )]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -4406,6 +4424,7 @@ mod tests {
                     vec![priced("m/one", "Flash", 0.0, Some("standard"))],
                 )]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -4428,6 +4447,7 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4455,6 +4475,7 @@ mod tests {
                 ],
             )]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4484,6 +4505,7 @@ mod tests {
                 vec![offering("Dear", Some(9.0), Some("high"))],
             )]),
             artifact_version: None,
+            aa_coding_index: HashMap::new(),
             popular_models: Vec::new(),
             popular_apps: Vec::new(),
             popular_as_of: None,
@@ -4862,6 +4884,7 @@ mod tests {
                     ),
                 ]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -4941,7 +4964,7 @@ mod tests {
     }
 
     /// Dedicated snapshot for `lowest` tests: the cheapest paid
-    /// offering is unjudged, so the `low` tier (floor) and `lowest`
+    /// offering is unscored, so the `low` tier (floor) and `lowest`
     /// (no floor) diverge on the same data.
     fn lowest_router() -> Router {
         let unpriceable = Offering {
@@ -4964,6 +4987,7 @@ mod tests {
                     ("m/d".to_string(), vec![unpriceable]),
                 ]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -4986,7 +5010,7 @@ mod tests {
         assert_eq!(d.provider, "B");
         assert_eq!(d.model_id, "m/b");
         assert!(!d.sticky);
-        // Same data, `low` keeps its judged floor and picks A instead.
+        // Same data, `low` keeps its scored floor and picks A instead.
         let low = r.decide("openrouter/pair/low", None).unwrap();
         assert_eq!(low.provider, "A");
         assert_eq!(low.model_id, "m/a");
@@ -5032,6 +5056,7 @@ mod tests {
                     vec![priced("m/c", "C", 0.0, Some("standard"))],
                 )]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -5082,6 +5107,7 @@ mod tests {
                     ),
                 ]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -5132,6 +5158,7 @@ mod tests {
             snapshot: RwLock::new(Snapshot {
                 models: HashMap::from([("m/a".to_string(), vec![priced("m/a", "A", 2.0, None)])]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,
@@ -5158,6 +5185,7 @@ mod tests {
             snapshot: RwLock::new(Snapshot {
                 models: HashMap::from([("m/a".to_string(), vec![priced("m/a", "A", 2.0, None)])]),
                 artifact_version: None,
+                aa_coding_index: HashMap::new(),
                 popular_models: Vec::new(),
                 popular_apps: Vec::new(),
                 popular_as_of: None,

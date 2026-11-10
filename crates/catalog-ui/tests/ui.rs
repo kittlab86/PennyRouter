@@ -5,7 +5,7 @@
 //! content per route with it set.
 
 use pennyrouter_catalog::{
-    publish, publish_ranking, Catalog, ClassRanking, EndpointIndex, EndpointJudgment, EndpointRow,
+    publish, publish_ranking, Catalog, ClassRanking, EndpointIndex, EndpointScore, EndpointRow,
     ModelRow, RankEntry, RankingDocument,
 };
 use std::collections::BTreeMap;
@@ -49,9 +49,9 @@ fn artifact_dir(test: &str) -> std::path::PathBuf {
             supports_decisions: None,
             quality_tier: Some("high".to_string()),
             quality_score: Some(0.9),
-            judged_at: Some("t".to_string()),
-            judge_model: Some("recorded".to_string()),
-            judge_prompt: Some("recorded".to_string()),
+            scored_at: Some("t".to_string()),
+            score_model: Some("recorded".to_string()),
+            score_prompt: Some("recorded".to_string()),
             price_override_tokens: None,
         })
         .unwrap();
@@ -82,9 +82,9 @@ fn artifact_dir(test: &str) -> std::path::PathBuf {
             supports_decisions: None,
             quality_tier: None,
             quality_score: None,
-            judged_at: None,
-            judge_model: None,
-            judge_prompt: None,
+            scored_at: None,
+            score_model: None,
+            score_prompt: None,
             price_override_tokens: None,
         })
         .unwrap();
@@ -110,18 +110,18 @@ fn artifact_dir(test: &str) -> std::path::PathBuf {
     let ep = catalog.endpoints_for("m/ui").unwrap();
     assert_eq!(ep.len(), 1);
     catalog
-        .update_endpoint_judgment(
+        .update_endpoint_score(
             ep[0].id,
-            &EndpointJudgment {
+            &EndpointScore {
                 quality_tier: Some("high".to_string()),
                 quality_score: Some(0.9),
-                judged_at: "t".to_string(),
-                judge_model: Some("recorded".to_string()),
-                judge_prompt: Some("recorded".to_string()),
+                scored_at: "t".to_string(),
+                score_model: Some("recorded".to_string()),
+                score_prompt: Some("recorded".to_string()),
             },
         )
         .unwrap();
-    catalog.set_meta("judge_backend", "recorded").unwrap();
+    catalog.set_meta("score_backend", "recorded").unwrap();
     drop(catalog);
     let out = dir.join("out");
     let (_, _, manifest) = publish(&work, &out, "test", 1, 1).unwrap();
@@ -317,7 +317,7 @@ fn serves_runs_models_ranking_meta_and_log() {
     assert!(ranking.contains("UiProvider"));
 
     let meta = get(&server, "/meta");
-    assert!(meta.contains("judge_backend"));
+    assert!(meta.contains("score_backend"));
 
     let log_page = get(&server, "/log");
     assert!(log_page.contains("line two"));

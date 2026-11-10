@@ -24,7 +24,7 @@ BASETEN_API_KEY="$(get BASETEN_API_KEY)"
 MODAL_API_KEY="$(get MODAL_API_KEY)"
 MODAL_KEY_ID="$(get MODAL_KEY_ID)"
 MODAL_KEY_SECRET="$(get MODAL_KEY_SECRET)"
-MODAL_JUDGE_URL="$(get MODAL_JUDGE_URL)"
+MODAL_SCORE_URL="$(get MODAL_SCORE_URL)"
 MODAL_BASE_URL="$(get MODAL_BASE_URL)"
 
 fail=0
@@ -91,12 +91,12 @@ print('models:', [m.get('id','?') for m in d.get('data', [])][:5])
   return 0
 }
 
-if have "$MODAL_KEY_ID" && have "$MODAL_KEY_SECRET" && have "$MODAL_JUDGE_URL"; then
-  echo "=== 3a. Modal pair -> judge /v1/models ==="
-  modal_models "$(api_root "$MODAL_JUDGE_URL")/models" \
+if have "$MODAL_KEY_ID" && have "$MODAL_KEY_SECRET" && have "$MODAL_SCORE_URL"; then
+  echo "=== 3a. Modal pair -> score /v1/models ==="
+  modal_models "$(api_root "$MODAL_SCORE_URL")/models" \
     -H "Modal-Key: $MODAL_KEY_ID" -H "Modal-Secret: $MODAL_KEY_SECRET"
 else
-  echo "SKIP 3a: MODAL_KEY_ID/SECRET/JUDGE_URL incomplete"
+  echo "SKIP 3a: MODAL_KEY_ID/SECRET/SCORE_URL incomplete"
 fi
 if have "$MODAL_KEY_ID" && have "$MODAL_KEY_SECRET" && have "$MODAL_BASE_URL"; then
   echo "=== 3b. Modal pair -> serving /v1/models ==="
@@ -105,12 +105,12 @@ if have "$MODAL_KEY_ID" && have "$MODAL_KEY_SECRET" && have "$MODAL_BASE_URL"; t
 else
   echo "SKIP 3b: MODAL_KEY_ID/SECRET/BASE_URL incomplete"
 fi
-if have "$MODAL_API_KEY" && have "$MODAL_JUDGE_URL"; then
-  echo "=== 4a. Modal Bearer -> judge /v1/models ==="
-  modal_models "$(api_root "$MODAL_JUDGE_URL")/models" \
+if have "$MODAL_API_KEY" && have "$MODAL_SCORE_URL"; then
+  echo "=== 4a. Modal Bearer -> score /v1/models ==="
+  modal_models "$(api_root "$MODAL_SCORE_URL")/models" \
     -H "Authorization: Bearer $MODAL_API_KEY"
 else
-  echo "SKIP 4a: MODAL_API_KEY/JUDGE_URL incomplete"
+  echo "SKIP 4a: MODAL_API_KEY/SCORE_URL incomplete"
 fi
 if have "$MODAL_API_KEY" && have "$MODAL_BASE_URL"; then
   echo "=== 4b. Modal Bearer -> serving /v1/models ==="

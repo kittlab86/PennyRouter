@@ -146,12 +146,12 @@ Catalog pipeline: `CATALOG_IMAGE` (sync image tag), `SYNC_INTERVAL`
 (seconds between sync cycles, 0 = run once), `FETCH_OPENROUTER`
 (1 = live fetch, 0 = baked fixtures), `EXTRA_MODEL_IDS`
 (comma-separated ids fetched individually), `RANKINGS_API_KEY` (menu
-popularity pins via the Data API, plus the OpenRouter judge leg;
-unset = published without pins), `OPENROUTER_JUDGE_MODEL` (judge
-model for `--judge-backend openrouter`; unset = that backend fails
-closed), judge keys (`BASETEN_API_KEY`,
-`MODAL_KEY_ID`/`MODAL_KEY_SECRET`, `MODAL_JUDGE_URL`; unset =
-recorded-fixture judging), `CATALOG_UI`
+popularity pins via the Data API, plus the OpenRouter scoring leg;
+unset = published without pins), `OPENROUTER_SCORE_MODEL` (scorer
+model for `--score-backend openrouter`; unset = that backend fails
+closed), score keys (`BASETEN_API_KEY`,
+`MODAL_KEY_ID`/`MODAL_KEY_SECRET`, `MODAL_SCORE_URL`; unset = online
+scoring fails closed while offline tiers still apply), `CATALOG_UI`
 (`1` lets the catalog-ui browser start). Gateway menu lists:
 `MODAL_MODELS` / `BASETEN_MODELS` (comma-separated, 1–3 ids each,
 advertised only when the provider base is configured). Popularity
@@ -177,42 +177,53 @@ or a privately distributed CA (e.g. Caddy `tls internal`). Prefer the
 explicit `baseURL` above.
 No local key store:
 backend keys travel with requests, never in config or fixtures. The
-one exception is catalog judging (Phase 4): the offline
-`catalog-process --judge-backend baseten|modal|openrouter` reads judge
-keys from the environment (`BASETEN_API_KEY`, `MODAL_JUDGE_URL`, `MODAL_KEY_ID`,
+one exception is catalog scoring (Phase 4): the offline
+`catalog-process --score-backend baseten|modal|openrouter` reads score
+keys from the environment (`BASETEN_API_KEY`, `MODAL_SCORE_URL`, `MODAL_KEY_ID`,
 `MODAL_KEY_SECRET`, shared `RANKINGS_API_KEY` for the OpenRouter leg,
-`OPENROUTER_JUDGE_MODEL` for its model — see
+`OPENROUTER_SCORE_MODEL` for its model — see
 [`.env.example`](../.env.example)). The gateway never reads them;
-without them judging stays on recorded fixtures. Never commit real
-values.
+without them online scoring fails closed while offline tiers still
+apply. Never commit real values.
 
 ## Decision-model catalog (Iter 15)
 
-Which model judges is config, not tribal knowledge. A judges file
-(`catalog-process --judges <file>`) lists one entry per backend —
-`recorded`, `baseten`, `modal`, `openrouter` — with the judge model,
-base URL, the *names* of the secret variables, the expected prompt
-version, and the optional known per-call cost; plus a policy section
-(`sample_rate`, `only_models`/`only_providers` scope, `max_calls`,
-`max_spend_usd`). Recording paths resolve from the working
-directory. Selection rules:
+Which model does the scoring is config, not tribal knowledge
+(renamed judging → scoring in Iter 32). Tiers come from two paths:
 
-- Recorded judging is the default: free, deterministic, full runs,
-  no caps. Live judges run only when explicitly selected with
-  `--judge-backend`, and only on the policy-selected subset
-  (deterministic per-endpoint sampling, so rebuilds re-judge the
-  same endpoints).
-- Call and spend caps are checked *before* any judgment is written:
+- Offline (default, Iter 32): every sync derives deterministic
+  tiers from the AA coding index — 70+ `high`, 40+ `standard`,
+  else `low` — free, no model calls. Models without an index
+  stay untiered.
+- Online (on demand): `catalog-process --score-backend
+  baseten|modal|openrouter` scores through an LLM leg. An online
+  verdict always wins over the offline tier on its row.
+
+A scorers file (`catalog-process --scorers <file>`) lists one entry
+per backend — `recorded`, `baseten`, `modal`, `openrouter` — with
+the scorer model, base URL, the *names* of the secret variables,
+the expected prompt version, and the optional known per-call cost;
+plus a policy section (`sample_rate`, `only_models`/`only_providers`
+scope, `max_calls`, `max_spend_usd`). Recording paths resolve from
+the working directory. Selection rules:
+
+- Online scorers run only when explicitly selected with
+  `--score-backend`, and only on the policy-selected subset
+  (deterministic per-endpoint sampling, so rebuilds re-score the
+  same endpoints). `recorded` replays a scores file (fixtures and
+  tests); it never calls a model.
+- Call and spend caps are checked *before* any score is written:
   a breached cap fails closed with the DB untouched. A spend cap
   with unknown per-call cost fails rather than guessing. Every live
   rebuild prints one spend line (`calls x unit = total (caps …)`).
-- Every judgment stores its audit identity (`judge_model`,
-  `judge_prompt` columns; `judge_backend`, `judge_model`,
-  `judge_prompt`, `judge_calls`, `judge_spend_usd` in `sync_meta`),
-  so a quality tier always traces back to the exact judge + prompt
-  behind it. Rows judged before Iter 15 read back `NULL` provenance.
+- Every score stores its audit identity (`score_model`,
+  `score_prompt` columns; `score_backend`, `score_model`,
+  `score_prompt`, `score_calls`, `score_spend_usd` in `sync_meta`),
+  so a quality tier always traces back to the exact scorer + prompt
+  behind it. Offline rows read `offline` / `aa-coding-v1`. Rows
+  scored before Iter 15 read back `NULL` provenance.
 - `--sample-rate`, `--max-calls`, `--max-spend-usd` override the
-  file policy. Judges never run on the request path — this is all
+  file policy. Scorers never run on the request path — this is all
   offline batch, before publish.
 
 ## Debug UIs (Iter 17)
@@ -258,7 +269,7 @@ code runs when they are off.
 - Catalog: `CATALOG_UI=1 catalog-ui --dir <artifact-dir>
   [--port 8080] [--bind 127.0.0.1] [--log-file <path>]` serves a
   browser over the published artifacts: run history (manifests
-  newest-first with verify status), models, endpoints (with judge
+  newest-first with verify status), models, endpoints (with score
   provenance), ranking order, rebuild/audit meta, and the last 200
   lines of the log file when given. The binary refuses to start
   without the flag. Nothing is cached or written, so it can run

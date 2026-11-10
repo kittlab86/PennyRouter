@@ -10,7 +10,7 @@ use axum::{
     routing::post,
     Router,
 };
-use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointJudgment, EndpointRow, ModelRow};
+use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelRow};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -78,9 +78,9 @@ fn build_db(path: &std::path::Path, alpha_price: f64, beta_price: f64) {
         supports_decisions: None,
         quality_tier: None,
         quality_score: None,
-        judged_at: None,
-        judge_model: None,
-        judge_prompt: None,
+        scored_at: None,
+        score_model: None,
+        score_prompt: None,
         price_override_tokens: None,
     };
     for row in [
@@ -102,12 +102,12 @@ fn build_db(path: &std::path::Path, alpha_price: f64, beta_price: f64) {
         supports_decisions: None,
         price_override_tokens: None,
     };
-    let judgment = |tier: &str| EndpointJudgment {
+    let score = |tier: &str| EndpointScore {
         quality_tier: Some(tier.to_string()),
         quality_score: None,
-        judged_at: "t".to_string(),
-        judge_model: None,
-        judge_prompt: None,
+        scored_at: "t".to_string(),
+        score_model: None,
+        score_prompt: None,
     };
     let eps = catalog.endpoints_for(MODEL).unwrap();
     assert_eq!(eps.len(), 3);
@@ -115,19 +115,19 @@ fn build_db(path: &std::path::Path, alpha_price: f64, beta_price: f64) {
         .update_endpoint_index(eps[0].id, &index(alpha_price, None))
         .unwrap();
     catalog
-        .update_endpoint_judgment(eps[0].id, &judgment("standard"))
+        .update_endpoint_score(eps[0].id, &score("standard"))
         .unwrap();
     catalog
         .update_endpoint_index(eps[1].id, &index(beta_price, None))
         .unwrap();
     catalog
-        .update_endpoint_judgment(eps[1].id, &judgment("high"))
+        .update_endpoint_score(eps[1].id, &score("high"))
         .unwrap();
     catalog
         .update_endpoint_index(eps[2].id, &index(0.1, Some("fp8")))
         .unwrap();
     catalog
-        .update_endpoint_judgment(eps[2].id, &judgment("high"))
+        .update_endpoint_score(eps[2].id, &score("high"))
         .unwrap();
 }
 
@@ -279,9 +279,9 @@ fn build_free_db(path: &std::path::Path) {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -304,14 +304,14 @@ fn build_free_db(path: &std::path::Path) {
             )
             .unwrap();
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 ep.id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some("standard".to_string()),
                     quality_score: None,
-                    judged_at: "t".to_string(),
-                    judge_model: None,
-                    judge_prompt: None,
+                    scored_at: "t".to_string(),
+                    score_model: None,
+                    score_prompt: None,
                 },
             )
             .unwrap();

@@ -1,29 +1,29 @@
-//! Iter 30: live judging through an OpenRouter-hosted model.
+//! Iter 30: live scoring through an OpenRouter-hosted model.
 //!
 //! OpenAI chat completions with a Bearer [REDACTED]; shared prompt, request
-//! shape, and validation live in `judge_openai`. The judge model is
-//! operator-configured (`OPENROUTER_JUDGE_MODEL`, fail-closed when
+//! shape, and validation live in `score_openai`. The scorer model is
+//! operator-configured (`OPENROUTER_SCORE_MODEL`, fail-closed when
 //! unset — OpenRouter models come and go, so nothing is pinned), and
-//! the key is the shared `RANKINGS_API_KEY` (Data API pins + judge
+//! the key is the shared `RANKINGS_API_KEY` (Data API pins + score
 //! leg, offline batch only, never the gateway). The key travels only
 //! in the Authorization header and is never logged (no `Debug` impl
 //! on purpose).
 
-use crate::judge::{Judge, Judgment};
-use crate::judge_openai::{chat_body, judgment_from_reply};
+use crate::score::{Scorer, Score};
+use crate::score_openai::{chat_body, score_from_reply};
 use crate::Error;
 use serde_json::Value;
 use std::time::Duration;
 
-/// Live judge over the OpenRouter OpenAI-compatible chat API.
-pub struct OpenRouterJudge {
+/// Live scorer over the OpenRouter OpenAI-compatible chat API.
+pub struct OpenRouterScorer {
     client: reqwest::blocking::Client,
     base_url: String,
     api_key: String,
     model: String,
 }
 
-impl OpenRouterJudge {
+impl OpenRouterScorer {
     /// OpenRouter chat completions root (`POST /chat/completions`).
     pub const BASE_URL: &'static str = "https://openrouter.ai/api/v1";
 
@@ -39,12 +39,12 @@ impl OpenRouterJudge {
         })
     }
 
-    /// Production judge: documented base URL, model from
-    /// `OPENROUTER_JUDGE_MODEL`, key from the shared
+    /// Production score: documented base URL, model from
+    /// `OPENROUTER_SCORE_MODEL`, key from the shared
     /// `RANKINGS_API_KEY`. Both fail closed when unset or empty.
     pub fn from_env() -> Result<Self, Error> {
-        let model = judge_env("OPENROUTER_JUDGE_MODEL")?;
-        let api_key = judge_env("RANKINGS_API_KEY")?;
+        let model = score_env("OPENROUTER_SCORE_MODEL")?;
+        let api_key = score_env("RANKINGS_API_KEY")?;
         Self::new(Self::BASE_URL, &api_key, &model)
     }
 
@@ -53,7 +53,7 @@ impl OpenRouterJudge {
         model_id: &str,
         provider_name: &str,
         payload: &Value,
-    ) -> Result<Judgment, Error> {
+    ) -> Result<Score, Error> {
         let body = chat_body(&self.model, model_id, provider_name, payload);
         let url = format!("{}/chat/completions", self.base_url);
         let reply: Value = self
@@ -64,34 +64,34 @@ impl OpenRouterJudge {
             .send()?
             .error_for_status()?
             .json()?;
-        judgment_from_reply("openrouter", &reply)
+        score_from_reply("openrouter", &reply)
     }
 }
 
-impl Judge for OpenRouterJudge {
-    fn identity(&self) -> crate::judge::JudgeIdentity {
-        crate::judge::JudgeIdentity {
+impl Scorer for OpenRouterScorer {
+    fn identity(&self) -> crate::score::ScorerIdentity {
+        crate::score::ScorerIdentity {
             model: self.model.clone(),
-            prompt_version: crate::judge_openai::PROMPT_VERSION.to_string(),
+            prompt_version: crate::score_openai::PROMPT_VERSION.to_string(),
         }
     }
 
-    fn judge(
+    fn score(
         &self,
         model_id: &str,
         provider_name: &str,
         payload: &Value,
-    ) -> Result<Judgment, Error> {
+    ) -> Result<Score, Error> {
         self.chat(model_id, provider_name, payload)
     }
 }
 
-/// One required judge setting: set and non-empty, else a keyed error.
-fn judge_env(name: &str) -> Result<String, Error> {
+/// One required score setting: set and non-empty, else a keyed error.
+fn score_env(name: &str) -> Result<String, Error> {
     let value = std::env::var(name)
-        .map_err(|_| Error::Judge(format!("{name} is not set (see .env.example)")))?;
+        .map_err(|_| Error::Scorer(format!("{name} is not set (see .env.example)")))?;
     if value.is_empty() {
-        return Err(Error::Judge(format!("{name} is empty (see .env.example)")));
+        return Err(Error::Scorer(format!("{name} is empty (see .env.example)")));
     }
     Ok(value)
 }

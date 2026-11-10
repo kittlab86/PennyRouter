@@ -27,7 +27,7 @@ pub fn tier_set(smart_max: bool) -> Vec<&'static str> {
 /// bodies contribute their `messages` array; Responses bodies their
 /// `input` (string, array, or object). Missing, mistyped, or empty
 /// inputs yield `None` (`classifier_no_input` → fallback): there is
-/// nothing to judge.
+/// nothing to score.
 pub fn extract_input(body: &serde_json::Value) -> Option<serde_json::Value> {
     if let Some(messages) = body.get("messages") {
         if messages

@@ -1,26 +1,41 @@
 //! Deterministic processing: payloads into fixed indexed columns.
 //!
-//! Pure-code extraction only (Phase 2a). Model-judged signals plug in
+//! Pure-code extraction only (Phase 2a). Model-scored signals plug in
 //! later (Phase 2b) behind the same per-endpoint update.
 
-use crate::store::{Catalog, EndpointIndex};
+use crate::score_offline::OfflineScorer;
+use crate::store::{Catalog, EndpointIndex, EndpointScore, ModelIndex};
 use crate::Error;
 use serde_json::Value;
 use std::collections::hash_map::Entry;
 
 pub struct ProcessSummary {
     pub processed: usize,
+    pub scored: usize,
 }
 
-/// Extract indexed values for every endpoint. Idempotent: re-running
-/// overwrites the same columns. Model-level signals (decision
-/// modality, Iter 24) resolve through a per-model payload cache so
-/// one lookup serves all of a model's endpoints.
+/// Extract indexed values for every endpoint, plus per-model
+/// Artificial Analysis indexes (Iter 31) and offline tiers (Iter
+/// 32). Idempotent: re-running overwrites the same columns.
+/// Model-level signals (decision modality, Iter 24) resolve through
+/// a per-model payload cache so one lookup serves all of a model's
+/// endpoints.
 pub fn run_processing(catalog: &Catalog, processed_at: &str) -> Result<ProcessSummary, Error> {
     let endpoints = catalog.all_endpoints()?;
     // One transaction for the whole run (plus its meta): a mid-run
     // failure rolls every update back instead of half-processing.
     catalog.transaction(|| {
+        for model in catalog.all_models()? {
+            let payload: Value = serde_json::from_str(&model.payload)?;
+            catalog.update_model_index(
+                &model.model_id,
+                &ModelIndex {
+                    aa_intelligence_index: extract_aa_index(&payload, "intelligence_index"),
+                    aa_coding_index: extract_aa_index(&payload, "coding_index"),
+                    aa_agentic_index: extract_aa_index(&payload, "agentic_index"),
+                },
+            )?;
+        }
         let mut models: std::collections::HashMap<String, Option<Value>> =
             std::collections::HashMap::new();
         let mut processed = 0;
@@ -58,8 +73,70 @@ pub fn run_processing(catalog: &Catalog, processed_at: &str) -> Result<ProcessSu
         }
         catalog.set_meta("processed_at", processed_at)?;
         catalog.set_meta("processed_count", &processed.to_string())?;
-        Ok(ProcessSummary { processed })
+        let scored = run_offline_scoring(catalog, &endpoints, processed_at)?;
+        Ok(ProcessSummary { processed, scored })
     })
+}
+
+/// Offline scoring pass (Iter 32): deterministic tiers from the AA
+/// coding index just distilled above — free, no model calls. Only
+/// untiered rows are filled: a tier already on the row (e.g. an
+/// online verdict, when `catalog-process` re-runs processing over a
+/// scored DB) always wins. Models without a coding index stay
+/// untiered for the online scorers.
+fn run_offline_scoring(
+    catalog: &Catalog,
+    endpoints: &[crate::store::EndpointRow],
+    processed_at: &str,
+) -> Result<usize, Error> {
+    use crate::score::Scorer;
+    let scorer = OfflineScorer::new(catalog.aa_coding_map()?);
+    let identity = scorer.identity();
+    let mut scored = 0;
+    for ep in endpoints {
+        if ep.quality_tier.is_some() {
+            continue;
+        }
+        let payload: Value = serde_json::from_str(&ep.payload)?;
+        let out = scorer.score(&ep.model_id, &ep.provider_name, &payload)?;
+        let Some(tier) = out.quality_tier else { continue };
+        catalog.update_endpoint_score(
+            ep.id,
+            &EndpointScore {
+                quality_tier: Some(tier),
+                quality_score: out.quality_score,
+                scored_at: processed_at.to_string(),
+                score_model: Some(identity.model.clone()),
+                score_prompt: Some(identity.prompt_version.clone()),
+            },
+        )?;
+        scored += 1;
+    }
+    catalog.set_meta("scored_at", processed_at)?;
+    catalog.set_meta("scored_count", &scored.to_string())?;
+    catalog.set_meta("score_model", &identity.model)?;
+    catalog.set_meta("score_prompt", &identity.prompt_version)?;
+    Ok(scored)
+}
+
+/// One Artificial Analysis index from a model payload (Iter 31):
+/// `benchmarks.artificial_analysis.<key>`, a number `0..=100`
+/// (live values mix integers and floats, e.g. `64.6`). Rounded to
+/// the nearest integer; missing, null, non-numeric, or out-of-range
+/// reads as `None` (unknown) — garbage like `999` never sorts first.
+fn extract_aa_index(model_payload: &Value, key: &str) -> Option<i64> {
+    let n = model_payload
+        .get("benchmarks")?
+        .get("artificial_analysis")?
+        .get(key)?;
+    let n = match n {
+        Value::Number(n) => n.as_f64()?,
+        _ => return None,
+    };
+    if !n.is_finite() || !(0.0..=100.0).contains(&n) {
+        return None;
+    }
+    Some(n.round() as i64)
 }
 
 /// Per-token price as f64; accepts a string or a number, else None.
@@ -250,6 +327,69 @@ mod tests {
         assert_eq!(class("fp8_e4m3"), "fp8");
         assert_eq!(class("int8"), "int8");
         assert_eq!(class("nf4"), "int4");
+    }
+
+    #[test]
+    fn aa_index_reads_benchmarks_when_valid() {
+        let payload = |aa: Value| json!({"benchmarks": {"artificial_analysis": aa}});
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": 71})), "coding_index"),
+            Some(71)
+        );
+        assert_eq!(
+            extract_aa_index(&payload(json!({"intelligence_index": 0})), "intelligence_index"),
+            Some(0)
+        );
+        assert_eq!(
+            extract_aa_index(&payload(json!({"agentic_index": 100})), "agentic_index"),
+            Some(100)
+        );
+        // Live values mix integers and floats; floats round.
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": 30.6})), "coding_index"),
+            Some(31)
+        );
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": 51.5})), "coding_index"),
+            Some(52)
+        );
+    }
+
+    #[test]
+    fn aa_index_falls_back_to_none() {
+        let payload = |aa: Value| json!({"benchmarks": {"artificial_analysis": aa}});
+        // Missing benchmarks / section / key.
+        assert_eq!(extract_aa_index(&json!({}), "coding_index"), None);
+        assert_eq!(
+            extract_aa_index(&json!({"benchmarks": {}}), "coding_index"),
+            None
+        );
+        assert_eq!(
+            extract_aa_index(&payload(json!({})), "coding_index"),
+            None
+        );
+        // Null, non-numeric, out of range.
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": null})), "coding_index"),
+            None
+        );
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": "71"})), "coding_index"),
+            None
+        );
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": -1})), "coding_index"),
+            None
+        );
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": 999})), "coding_index"),
+            None
+        );
+        // Rounds out of range, not into it.
+        assert_eq!(
+            extract_aa_index(&payload(json!({"coding_index": 100.6})), "coding_index"),
+            None
+        );
     }
 
     #[test]

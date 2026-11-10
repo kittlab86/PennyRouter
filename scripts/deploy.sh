@@ -8,7 +8,7 @@
 # compose file loads generic config via `env_file: [.env.dev]`, the
 # base file ships beside compose.yaml under that same name.
 #
-# Config (including catalog judge keys) ships in that merged `.env` —
+# Config (including catalog score keys) ships in that merged `.env` —
 # the no-keys rule covers gateway *serving* keys only, which stay pure
 # BYOK inside each request. The remote `.env` is chmod 600.
 #
@@ -37,9 +37,9 @@
 #                        network against http://gateway:$PORT/health.
 #   DEPLOY_SECRETS_FILE  Local secrets overlay (keys + custom URLs).
 #                        Default: the repo-root `.env` (gitignored).
-#                        Missing/empty = ship the base alone (judging
-#                        falls back to fixtures; unset providers fail
-#                        closed). Overlay keys win over the base.
+#                        Missing/empty = ship the base alone (no online
+#                        scoring keys; unset providers fail closed).
+#                        Overlay keys win over the base.
 #   SSH_OPTS             Extra options for ssh/scp, e.g. "-i ~/.ssh/id -p 2222".
 #   DRY_RUN              Set to 1 to print what would run (env shown
 #                        redacted) without touching the server.

@@ -106,9 +106,9 @@ fn out_of_range_discounts_extract_as_unknown() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -170,9 +170,9 @@ fn override_threshold_indexed_from_payload() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -230,9 +230,9 @@ fn corrupt_model_payload_fails_loudly() {
             supports_decisions: None,
             quality_tier: None,
             quality_score: None,
-            judged_at: None,
-            judge_model: None,
-            judge_prompt: None,
+            scored_at: None,
+            score_model: None,
+            score_prompt: None,
             price_override_tokens: None,
         })
         .unwrap();
@@ -293,16 +293,28 @@ fn migration_v1_to_current_preserves_data() {
     assert_eq!(eps[0].processed_at, None);
     assert_eq!(eps[0].quality_tier, None);
     assert_eq!(eps[0].quality_score, None);
-    assert_eq!(eps[0].judged_at, None);
-    assert_eq!(eps[0].judge_model, None);
-    assert_eq!(eps[0].judge_prompt, None);
+    assert_eq!(eps[0].scored_at, None);
+    assert_eq!(eps[0].score_model, None);
+    assert_eq!(eps[0].score_prompt, None);
     assert_eq!(eps[0].supports_tools, None);
     assert_eq!(eps[0].supports_decisions, None);
     assert_eq!(eps[0].price_override_tokens, None);
     assert_eq!(
         catalog.get_meta("schema_version").unwrap().as_deref(),
-        Some("5")
+        Some("7")
     );
+
+    // Migrated models carry the new AA columns (NULL until reprocessed).
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let aa: (Option<i64>, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT aa_intelligence_index, aa_coding_index, aa_agentic_index
+             FROM models WHERE model_id = 'm/id'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(aa, (None, None, None));
 
     // Processing works on the migrated DB.
     run_processing(&catalog, PROCESSED_AT).unwrap();
@@ -312,6 +324,49 @@ fn migration_v1_to_current_preserves_data() {
     assert_eq!(eps[0].processed_at.as_deref(), Some(PROCESSED_AT));
     assert_eq!(eps[0].supports_tools, None); // '{}' has no supported_parameters
     assert_eq!(eps[0].supports_decisions, None); // '{}' model payload has no architecture
+}
+
+/// Iter 31: `run_processing` distills
+/// `benchmarks.artificial_analysis.*` into the indexed `aa_*` model
+/// columns; models without benchmarks stay NULL.
+#[test]
+fn processing_writes_aa_indexes_from_model_payloads() {
+    let dir = common::scratch("aa-index");
+    let db = dir.join("work.db");
+    let catalog = Catalog::open(&db).unwrap();
+    catalog.init().unwrap();
+    let model = |id: &str, payload: &str| ModelRow {
+        model_id: id.into(),
+        name: id.into(),
+        source: "openrouter".into(),
+        payload: payload.into(),
+        fetched_at: "t".into(),
+    };
+    catalog
+        .insert_model(&model(
+            "m/scored",
+            r#"{"benchmarks":{"artificial_analysis":{
+                "intelligence_index": 51, "coding_index": 71, "agentic_index": null}}}"#,
+        ))
+        .unwrap();
+    catalog.insert_model(&model("m/bare", "{}")).unwrap();
+
+    run_processing(&catalog, PROCESSED_AT).unwrap();
+
+    let map = catalog.aa_coding_map().unwrap();
+    assert_eq!(map.get("m/scored"), Some(&71));
+    assert!(!map.contains_key("m/bare"));
+    // Full triple incl. the null agentic leg, straight from the row.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let aa: (Option<i64>, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT aa_intelligence_index, aa_coding_index, aa_agentic_index
+             FROM models WHERE model_id = 'm/scored'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(aa, (Some(51), Some(71), None));
 }
 
 #[test]
@@ -367,9 +422,9 @@ fn processing_extracts_decision_support_from_model_payload() {
         supports_decisions: None,
         quality_tier: None,
         quality_score: None,
-        judged_at: None,
-        judge_model: None,
-        judge_prompt: None,
+        scored_at: None,
+        score_model: None,
+        score_prompt: None,
         price_override_tokens: None,
     };
     catalog
@@ -423,5 +478,271 @@ fn processing_extracts_decision_support_from_model_payload() {
     assert_eq!(
         catalog.endpoints_for("m/bare").unwrap()[0].supports_decisions,
         None
+    );
+}
+
+/// Iter 32: offline scoring fills tiers from the coding index —
+/// high at 70+, standard at 40+, low below — with the normalized
+/// index as the score. Models without an index stay untiered.
+#[test]
+fn processing_scores_offline_tiers_from_coding_index() {
+    use pennyrouter_catalog::RULESET_VERSION;
+
+    let dir = common::scratch("offline-tiers");
+    let db = dir.join("work.db");
+    let catalog = Catalog::open(&db).unwrap();
+    catalog.init().unwrap();
+    let model = |id: &str, payload: &str| ModelRow {
+        model_id: id.into(),
+        name: id.into(),
+        source: "openrouter".into(),
+        payload: payload.into(),
+        fetched_at: "t".into(),
+    };
+    let endpoint = |id: &str| EndpointRow {
+        id: 0,
+        model_id: id.into(),
+        provider_name: "p".into(),
+        payload: "{}".into(),
+        fetched_at: "t".into(),
+        price_prompt: None,
+        price_completion: None,
+        price_cache_read: None,
+        price_cache_write: None,
+        precision_class: None,
+        promo_discount: None,
+        processed_at: None,
+        supports_tools: None,
+        supports_decisions: None,
+        quality_tier: None,
+        quality_score: None,
+        scored_at: None,
+        score_model: None,
+        score_prompt: None,
+        price_override_tokens: None,
+    };
+    let aa = |coding: i64| {
+        format!(r#"{{"benchmarks":{{"artificial_analysis":{{"coding_index":{coding}}}}}}}"#)
+    };
+    for (id, coding) in [("m/hi", 85), ("m/std", 50), ("m/lo", 10)] {
+        catalog.insert_model(&model(id, &aa(coding))).unwrap();
+        catalog.insert_endpoint(&endpoint(id)).unwrap();
+    }
+    catalog.insert_model(&model("m/bare", "{}")).unwrap();
+    catalog.insert_endpoint(&endpoint("m/bare")).unwrap();
+
+    let summary = run_processing(&catalog, PROCESSED_AT).unwrap();
+    assert_eq!(summary.processed, 4);
+    assert_eq!(summary.scored, 3);
+
+    let hi = &catalog.endpoints_for("m/hi").unwrap()[0];
+    assert_eq!(hi.quality_tier.as_deref(), Some("high"));
+    assert_eq!(hi.quality_score, Some(0.85));
+    assert_eq!(hi.scored_at.as_deref(), Some(PROCESSED_AT));
+    assert_eq!(hi.score_model.as_deref(), Some("offline"));
+    assert_eq!(hi.score_prompt.as_deref(), Some(RULESET_VERSION));
+    let std = &catalog.endpoints_for("m/std").unwrap()[0];
+    assert_eq!(std.quality_tier.as_deref(), Some("standard"));
+    assert_eq!(std.quality_score, Some(0.5));
+    let lo = &catalog.endpoints_for("m/lo").unwrap()[0];
+    assert_eq!(lo.quality_tier.as_deref(), Some("low"));
+    assert_eq!(lo.quality_score, Some(0.1));
+    let bare = &catalog.endpoints_for("m/bare").unwrap()[0];
+    assert_eq!(bare.quality_tier, None);
+    assert_eq!(bare.quality_score, None);
+    assert_eq!(bare.scored_at, None);
+
+    // Run-level audit meta mirrors the row stamps.
+    assert_eq!(
+        catalog.get_meta("scored_count").unwrap().as_deref(),
+        Some("3")
+    );
+    assert_eq!(
+        catalog.get_meta("score_model").unwrap().as_deref(),
+        Some("offline")
+    );
+    assert_eq!(
+        catalog.get_meta("score_prompt").unwrap().as_deref(),
+        Some(RULESET_VERSION)
+    );
+}
+
+/// Iter 32: an existing tier (e.g. an online verdict) always wins —
+/// the offline pass only fills untiered rows.
+#[test]
+fn offline_scoring_never_overwrites_existing_tiers() {
+    use pennyrouter_catalog::EndpointScore;
+
+    let dir = common::scratch("offline-precedence");
+    let db = dir.join("work.db");
+    let catalog = Catalog::open(&db).unwrap();
+    catalog.init().unwrap();
+    catalog
+        .insert_model(&ModelRow {
+            model_id: "m/coder".to_string(),
+            name: "Coder".to_string(),
+            source: "openrouter".to_string(),
+            payload: r#"{"benchmarks":{"artificial_analysis":{"coding_index":90}}}"#
+                .to_string(),
+            fetched_at: "t".to_string(),
+        })
+        .unwrap();
+    for provider in ["p-online", "p-fresh"] {
+        catalog
+            .insert_endpoint(&EndpointRow {
+                id: 0,
+                model_id: "m/coder".to_string(),
+                provider_name: provider.to_string(),
+                payload: "{}".to_string(),
+                fetched_at: "t".to_string(),
+                price_prompt: None,
+                price_completion: None,
+                price_cache_read: None,
+                price_cache_write: None,
+                precision_class: None,
+                promo_discount: None,
+                processed_at: None,
+                supports_tools: None,
+                supports_decisions: None,
+                quality_tier: None,
+                quality_score: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
+                price_override_tokens: None,
+            })
+            .unwrap();
+    }
+    // An online verdict landed on one offering before processing.
+    let online = catalog
+        .endpoints_for("m/coder")
+        .unwrap()
+        .into_iter()
+        .find(|ep| ep.provider_name == "p-online")
+        .unwrap();
+    catalog
+        .update_endpoint_score(
+            online.id,
+            &EndpointScore {
+                quality_tier: Some("low".to_string()),
+                quality_score: Some(0.2),
+                scored_at: "t0".to_string(),
+                score_model: Some("llm-x".to_string()),
+                score_prompt: Some("v9".to_string()),
+            },
+        )
+        .unwrap();
+
+    let summary = run_processing(&catalog, PROCESSED_AT).unwrap();
+    assert_eq!(summary.scored, 1);
+
+    let eps = catalog.endpoints_for("m/coder").unwrap();
+    let online = eps.iter().find(|ep| ep.provider_name == "p-online").unwrap();
+    assert_eq!(online.quality_tier.as_deref(), Some("low"));
+    assert_eq!(online.quality_score, Some(0.2));
+    assert_eq!(online.scored_at.as_deref(), Some("t0"));
+    assert_eq!(online.score_model.as_deref(), Some("llm-x"));
+    assert_eq!(online.score_prompt.as_deref(), Some("v9"));
+    let fresh = eps.iter().find(|ep| ep.provider_name == "p-fresh").unwrap();
+    assert_eq!(fresh.quality_tier.as_deref(), Some("high"));
+    assert_eq!(fresh.quality_score, Some(0.9));
+    assert_eq!(fresh.score_model.as_deref(), Some("offline"));
+}
+
+/// Iter 32: v6 databases migrate to v7 with verdicts intact — the
+/// audit columns rename, legacy meta keys drop, version bumps.
+#[test]
+fn migration_v6_to_v7_renames_scoring_columns() {
+    use rusqlite::{params, Connection};
+
+    // v6 layout, as Iter 31 created it: indexed columns under their
+    // v6 (judge-*) names plus a scored row and legacy meta.
+    let dir = common::scratch("migrate-v6");
+    let db = dir.join("v6.db");
+    {
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(pennyrouter_catalog::V1_DDL).unwrap();
+        for (name, ty) in [
+            ("price_prompt", "REAL"),
+            ("price_completion", "REAL"),
+            ("price_cache_read", "REAL"),
+            ("price_cache_write", "REAL"),
+            ("precision_class", "TEXT"),
+            ("promo_discount", "REAL"),
+            ("processed_at", "TEXT"),
+            ("supports_tools", "INTEGER"),
+            ("supports_decisions", "INTEGER"),
+            ("quality_tier", "TEXT"),
+            ("quality_score", "REAL"),
+            ("judged_at", "TEXT"),
+            ("judge_model", "TEXT"),
+            ("judge_prompt", "TEXT"),
+            ("price_override_tokens", "INTEGER"),
+        ] {
+            conn.execute_batch(&format!("ALTER TABLE endpoints ADD COLUMN {name} {ty}"))
+                .unwrap();
+        }
+        for (name, ty) in [
+            ("aa_intelligence_index", "INTEGER"),
+            ("aa_coding_index", "INTEGER"),
+            ("aa_agentic_index", "INTEGER"),
+        ] {
+            conn.execute_batch(&format!("ALTER TABLE models ADD COLUMN {name} {ty}"))
+                .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO models (model_id, name, source, payload, fetched_at)
+             VALUES (?1, 'n', 'openrouter', '{}', 't')",
+            params!["m/id"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO endpoints (model_id, provider_name, payload, fetched_at,
+             quality_tier, quality_score, judged_at, judge_model, judge_prompt)
+             VALUES (?1, 'p', '{}', 't', 'high', 0.9, 't0', 'm9', 'v1')",
+            params!["m/id"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_meta (key, value) VALUES ('schema_version', '6'),
+             ('judge_backend', 'baseten'), ('judged_count', '4')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let catalog = Catalog::open(&db).unwrap();
+    catalog.init().unwrap();
+
+    // Verdicts carry over under the new names.
+    let ep = &catalog.endpoints_for("m/id").unwrap()[0];
+    assert_eq!(ep.quality_tier.as_deref(), Some("high"));
+    assert_eq!(ep.quality_score, Some(0.9));
+    assert_eq!(ep.scored_at.as_deref(), Some("t0"));
+    assert_eq!(ep.score_model.as_deref(), Some("m9"));
+    assert_eq!(ep.score_prompt.as_deref(), Some("v1"));
+
+    // Old columns are gone, new ones present.
+    let conn = Connection::open(&db).unwrap();
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(endpoints)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for old in ["judged_at", "judge_model", "judge_prompt"] {
+        assert!(!cols.contains(&old.to_string()), "legacy column survived: {old}");
+    }
+    for new in ["scored_at", "score_model", "score_prompt"] {
+        assert!(cols.contains(&new.to_string()), "renamed column missing: {new}");
+    }
+
+    // Legacy meta dropped, version bumped.
+    assert_eq!(catalog.get_meta("judge_backend").unwrap(), None);
+    assert_eq!(catalog.get_meta("judged_count").unwrap(), None);
+    assert_eq!(
+        catalog.get_meta("schema_version").unwrap().as_deref(),
+        Some("7")
     );
 }

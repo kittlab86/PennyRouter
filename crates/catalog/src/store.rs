@@ -1,8 +1,12 @@
 //! SQLite store: open/init, inserts, and read queries.
 
-use crate::schema::{DDL, ENDPOINT_INDEXED_COLUMNS, SCHEMA_VERSION};
+use crate::schema::{
+    DDL, ENDPOINT_INDEXED_COLUMNS, ENDPOINT_RENAMED_COLUMNS, LEGACY_SCORE_META_KEYS,
+    MODEL_INDEXED_COLUMNS, SCHEMA_VERSION,
+};
 use crate::Error;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct ModelRow {
@@ -11,6 +15,12 @@ pub struct ModelRow {
     pub source: String,
     pub payload: String,
     pub fetched_at: String,
+}
+
+/// Model id + raw payload (see `all_models`).
+pub struct ModelPayload {
+    pub model_id: String,
+    pub payload: String,
 }
 
 #[derive(Clone)]
@@ -31,9 +41,9 @@ pub struct EndpointRow {
     pub supports_decisions: Option<i64>,
     pub quality_tier: Option<String>,
     pub quality_score: Option<f64>,
-    pub judged_at: Option<String>,
-    pub judge_model: Option<String>,
-    pub judge_prompt: Option<String>,
+    pub scored_at: Option<String>,
+    pub score_model: Option<String>,
+    pub score_prompt: Option<String>,
     pub price_override_tokens: Option<i64>,
 }
 
@@ -51,22 +61,32 @@ pub struct EndpointIndex {
     pub price_override_tokens: Option<i64>,
 }
 
-/// Model-judged signals distilled by judging (Phase 2b), plus the
-/// audit identity of the judge that produced them (Iter 15: model +
-/// prompt version with every judgment; `None` on rows judged before
+/// Artificial Analysis indexes distilled from a model payload by
+/// processing (Iter 31): `benchmarks.artificial_analysis.*`,
+/// rounded to `0..=100`, or `None` when absent/non-numeric/out of
+/// range.
+pub struct ModelIndex {
+    pub aa_intelligence_index: Option<i64>,
+    pub aa_coding_index: Option<i64>,
+    pub aa_agentic_index: Option<i64>,
+}
+
+/// Model-scored signals distilled by scoring (Phase 2b), plus the
+/// audit identity of the scorer that produced them (Iter 15: model +
+/// prompt version with every score; `None` on rows scored before
 /// the audit columns existed).
-pub struct EndpointJudgment {
+pub struct EndpointScore {
     pub quality_tier: Option<String>,
     pub quality_score: Option<f64>,
-    pub judged_at: String,
-    pub judge_model: Option<String>,
-    pub judge_prompt: Option<String>,
+    pub scored_at: String,
+    pub score_model: Option<String>,
+    pub score_prompt: Option<String>,
 }
 
 const ENDPOINT_COLS: &str = "id, model_id, provider_name, payload, fetched_at,
     price_prompt, price_completion, price_cache_read, price_cache_write,
     precision_class, promo_discount, processed_at, supports_tools,
-    supports_decisions, quality_tier, quality_score, judged_at, judge_model, judge_prompt,
+    supports_decisions, quality_tier, quality_score, scored_at, score_model, score_prompt,
     price_override_tokens";
 
 fn endpoint_row(r: &Row) -> Result<EndpointRow, rusqlite::Error> {
@@ -87,9 +107,9 @@ fn endpoint_row(r: &Row) -> Result<EndpointRow, rusqlite::Error> {
         supports_decisions: r.get(13)?,
         quality_tier: r.get(14)?,
         quality_score: r.get(15)?,
-        judged_at: r.get(16)?,
-        judge_model: r.get(17)?,
-        judge_prompt: r.get(18)?,
+        scored_at: r.get(16)?,
+        score_model: r.get(17)?,
+        score_prompt: r.get(18)?,
         price_override_tokens: r.get(19)?,
     })
 }
@@ -197,11 +217,30 @@ impl Catalog {
             )));
         }
         // Table/column names are internal constants, never user input.
+        // v7 renames first: a v6 database carries verdicts under the
+        // old column names, and the ADD pass below must see the new
+        // ones already in place.
+        for (old, new) in ENDPOINT_RENAMED_COLUMNS {
+            if self.has_column("endpoints", old)? && !self.has_column("endpoints", new)? {
+                self.conn
+                    .execute_batch(&format!("ALTER TABLE endpoints RENAME COLUMN {old} TO {new}"))?;
+            }
+        }
         for (name, ty) in ENDPOINT_INDEXED_COLUMNS {
             if !self.has_column("endpoints", name)? {
                 self.conn
                     .execute_batch(&format!("ALTER TABLE endpoints ADD COLUMN {name} {ty}"))?;
             }
+        }
+        for (name, ty) in MODEL_INDEXED_COLUMNS {
+            if !self.has_column("models", name)? {
+                self.conn
+                    .execute_batch(&format!("ALTER TABLE models ADD COLUMN {name} {ty}"))?;
+            }
+        }
+        for key in LEGACY_SCORE_META_KEYS {
+            self.conn
+                .execute("DELETE FROM sync_meta WHERE key = ?1", params![key])?;
         }
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(())
@@ -264,6 +303,36 @@ impl Catalog {
         Ok(())
     }
 
+    /// Fill the AA index columns of one model, leaving the payload
+    /// alone (Iter 31).
+    pub fn update_model_index(&self, model_id: &str, index: &ModelIndex) -> Result<(), Error> {
+        self.conn.execute(
+            "UPDATE models SET aa_intelligence_index = ?1, aa_coding_index = ?2,
+             aa_agentic_index = ?3 WHERE model_id = ?4",
+            params![
+                index.aa_intelligence_index,
+                index.aa_coding_index,
+                index.aa_agentic_index,
+                model_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Coding index per model where known, for the gateway snapshot.
+    pub fn aa_coding_map(&self) -> Result<HashMap<String, i64>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT model_id, aa_coding_index FROM models WHERE aa_coding_index IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
+            let index: i64 = r.get(1)?;
+            Ok((id, index))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(Error::from)
+    }
+
     /// Every stored model id, for re-sync pruning.
     pub fn all_model_ids(&self) -> Result<Vec<String>, Error> {
         let mut stmt = self.conn.prepare("SELECT model_id FROM models")?;
@@ -271,6 +340,22 @@ impl Catalog {
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
         Ok(ids)
+    }
+
+    /// Every model id + raw payload, for the processing model loop
+    /// (Iter 31). Indexed columns stay out: the loop only reads the
+    /// payload and writes through `update_model_index`.
+    pub fn all_models(&self) -> Result<Vec<ModelPayload>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT model_id, payload FROM models ORDER BY model_id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ModelPayload {
+                model_id: r.get(0)?,
+                payload: r.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
     }
 
     /// Fill the indexed columns of one endpoint, leaving the payload alone.
@@ -297,22 +382,22 @@ impl Catalog {
         Ok(())
     }
 
-    /// Fill the judgment columns of one endpoint, leaving the payload
+    /// Fill the score columns of one endpoint, leaving the payload
     /// and the deterministic indexed columns alone.
-    pub fn update_endpoint_judgment(
+    pub fn update_endpoint_score(
         &self,
         id: i64,
-        judgment: &EndpointJudgment,
+        score: &EndpointScore,
     ) -> Result<(), Error> {
         self.conn.execute(
             "UPDATE endpoints SET quality_tier = ?1, quality_score = ?2,
-             judged_at = ?3, judge_model = ?4, judge_prompt = ?5 WHERE id = ?6",
+             scored_at = ?3, score_model = ?4, score_prompt = ?5 WHERE id = ?6",
             params![
-                judgment.quality_tier,
-                judgment.quality_score,
-                judgment.judged_at,
-                judgment.judge_model,
-                judgment.judge_prompt,
+                score.quality_tier,
+                score.quality_score,
+                score.scored_at,
+                score.score_model,
+                score.score_prompt,
                 id
             ],
         )?;
@@ -410,7 +495,7 @@ mod tests {
         catalog.init().unwrap();
         assert_eq!(
             catalog.get_meta("schema_version").unwrap().as_deref(),
-            Some("5")
+            Some("7")
         );
         assert_eq!(catalog.counts().unwrap(), (0, 0));
     }

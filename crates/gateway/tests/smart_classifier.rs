@@ -13,7 +13,7 @@ use axum::{
     routing::post,
     Router,
 };
-use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointJudgment, EndpointRow, ModelRow};
+use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelRow};
 use pennyrouter_gateway::{ClassifierConfig, Metrics};
 use std::{
     collections::HashMap,
@@ -26,7 +26,7 @@ const API_KEY: &str = "Bearer test-key";
 const CLASSIFIER_MODEL: &str = "test-classifier";
 
 /// Catalog: m/cheap (Cheap 1.0/low), m/dear (Dear 9.0/high), m/free
-/// (Freebie 0.0/standard), m/raw (Raw 0.5/unjudged). All fp16, none
+/// (Freebie 0.0/standard), m/raw (Raw 0.5/unscored). All fp16, none
 /// tool-capable — so tool-bearing requests starve by construction.
 fn build_db(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
@@ -65,9 +65,9 @@ fn build_db(path: &std::path::Path) {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -91,14 +91,14 @@ fn build_db(path: &std::path::Path) {
             .unwrap();
         if let Some(tier) = tier {
             catalog
-                .update_endpoint_judgment(
+                .update_endpoint_score(
                     id,
-                    &EndpointJudgment {
+                    &EndpointScore {
                         quality_tier: Some(tier.to_string()),
                         quality_score: None,
-                        judged_at: "t".to_string(),
-                        judge_model: None,
-                        judge_prompt: None,
+                        scored_at: "t".to_string(),
+                        score_model: None,
+                        score_prompt: None,
                     },
                 )
                 .unwrap();
@@ -411,8 +411,8 @@ async fn smart_rejects_out_of_domain_tier_and_falls_back() {
 
 #[tokio::test]
 async fn smart_lowest_has_no_quality_floor() {
-    // Cheapest paid is the unjudged Raw pick: `lowest` takes it while
-    // `low` (judged floor) would take Cheap.
+    // Cheapest paid is the unscored Raw pick: `lowest` takes it while
+    // `low` (scored floor) would take Cheap.
     let mock = verdict_mock(r#"{"tier":"lowest"}"#);
     let (gw, _, _) = setup("lowest", mock, vec![]).await;
 

@@ -636,8 +636,65 @@ Development delivers Docker images, platform delivers deployments.
   entry resolves, stub-backed verdict, `build_judge` from entry) +
   CLI zero-sample dispatch. `cargo test`, clippy, fmt clean.
 
-## After Iter 30
+## Iter 31 — Artificial Analysis index ingestion (done)
+
+- Goal: make OpenRouter's per-model Artificial Analysis indexes
+  queryable (per the [ingestion proposal](proposals/2026-11-03-artificial-analysis-index.md)),
+  as the scope signal for on-demand judging.
+- Value: judging (and later filters) can target high-quality models
+  instead of the whole catalog; the gateway shows coding strength
+  per model on `/ui`.
+- Shipped: schema v5→v6 (`aa_intelligence/coding/agentic_index` on
+  `models`, idempotent migrate); `run_processing` distills them
+  from `benchmarks.artificial_analysis.*` (live ints and floats
+  rounded, garbage → `NULL`); gateway snapshot carries the coding
+  map, display-only (`· coding N` model headers, no routing
+  change). Deviations from the draft: `ModelRow` untouched
+  (`ModelPayload` + `aa_coding_map()` instead); first consumer is
+  judging scope, minindex stays proposed.
+- Deploy note: a v6 gateway rejects v5 artifacts — the first v6
+  publish must land before (or with) the gateway image. Reloads
+  keep last-good across the window; a boot on v5 stays in standby
+  passthrough until the first v6 publish.
+- Test: extract vectors (incl. float rounding + out-of-range),
+  v1→v6 migrate incl. model cols, processing writes, snapshot
+  carry, `/ui` header. Live one-shot: 469 models, coding 168,
+  intelligence 89, agentic 136. `cargo test` clean locally;
+  clippy/fmt via CI (sandbox lacks the toolchain).
+
+## Iter 32 — Scoring rename + offline tiers (done)
+
+- Goal: rename judging → scoring end to end, and make the default
+  path an offline (no-AI) tier derivation so the catalog always has
+  tiers without LLM spend.
+- Value: every sync tiers AA-indexed models free (coding 70+
+  `high`, 40+ `standard`, else `low`); on-demand online verdicts
+  target only what operators pick, and always win over offline
+  tiers.
+- Shipped: `Scorer`/`Score`/`ScorerIdentity`, `score_*` modules,
+  `--score`/`--score-backend`/`--scorers` CLI, `scorers.json` +
+  `scores*.json` fixtures, `OPENROUTER_SCORE_MODEL` /
+  `MODAL_SCORE_URL` env, schema v6→v7 (`scored_at`/`score_model`/
+  `score_prompt` rename with verdict carry-over, legacy meta
+  dropped); `OfflineScorer` (`offline` / `aa-coding-v1`) runs in
+  `run_processing` on untiered rows only; sync + process CLIs
+  report the offline count. Live LLM prompts stay byte-identical
+  (v1 frozen).
+- Deploy note: a v7 gateway rejects v6 artifacts — the first v7
+  publish must land before (or with) the gateway image. Reloads
+  keep last-good across the window; a boot on v6 stays in standby
+  passthrough until the first v7 publish. Operators must rename
+  `OPENROUTER_JUDGE_MODEL` → `OPENROUTER_SCORE_MODEL` and
+  `MODAL_JUDGE_URL` → `MODAL_SCORE_URL` in `.env` before online
+  scoring runs.
+- Test: cutoff/clamp/identity units, processing tiers + meta,
+  online-wins precedence, v6→v7 migrate (values, dropped
+  columns/keys), CLI offline line. `cargo test --workspace`
+  clean locally (39 suites); clippy/fmt via CI (sandbox lacks
+  the toolchain).
+
+## After Iter 32
 
 Deferred ideas in [future.md](future.md): exact price prediction,
-parallel fan-out, further judge backends. Each becomes roadmap items
+parallel fan-out, further score backends. Each becomes roadmap items
 only when pulled forward deliberately.

@@ -35,8 +35,9 @@ Sources change constantly, so the schema is two-tier:
 - **Flexible JSON payload columns** preserving the raw source data, so
   nothing is lost when a source adds or renames fields.
 - **Fixed indexed columns**, added by the processing phase: normalized
-  prices, precision class, quality signals, promo windows — the stable,
-  queryable projection routing and ranking read.
+  prices, precision class, quality signals, promo windows, per-model
+  Artificial Analysis indexes (Iter 31) — the stable, queryable
+  projection routing and ranking read.
 
 The fixed schema grows only with proven index needs; the payload keeps
 everything else.
@@ -59,7 +60,7 @@ remote hosts later.
 
 - Own schedule (periodic); independent deploy and scaling.
 - Gathering reads only public source endpoints — no API keys
-  involved. Live judge backends (Phase 4) take keys from env vars
+  involved. Live score backends (Phase 4) take keys from env vars
   (repo-root `.env`, shipped by deploys), never from fixtures or
   the repo. (Gateway serving keys still travel with requests.)
 - Never serves gateway traffic; never shares a process with the gateway.

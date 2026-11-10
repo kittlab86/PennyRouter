@@ -1,6 +1,6 @@
-//! B19: live-judge policy flags apply with or without `--judges`.
+//! B19: live-score policy flags apply with or without `--scorers`.
 //!
-//! Runs the real `catalog-process` binary: a bare `--judge-backend
+//! Runs the real `catalog-process` binary: a bare `--score-backend
 //! baseten` must honor `--sample-rate`/`--max-calls` instead of
 //! running a full uncapped live rebuild.
 
@@ -15,13 +15,13 @@ fn bin() -> PathBuf {
 }
 
 #[test]
-fn sample_rate_zero_judges_nothing_live() {
+fn sample_rate_zero_scorers_nothing_live() {
     let (_dir, db) = synced_db("b19-sample");
     std::env::set_var("BASETEN_API_KEY", "probe-dummy");
     let out = Command::new(bin())
         .arg("--db")
         .arg(&db)
-        .arg("--judge-backend")
+        .arg("--score-backend")
         .arg("baseten")
         .arg("--sample-rate")
         .arg("0")
@@ -35,30 +35,30 @@ fn sample_rate_zero_judges_nothing_live() {
         "zero-sample run must succeed without network.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("judged 0 endpoints"),
-        "expected a judged-0 line, got:\n{stdout}"
+        stdout.contains("scored 0 endpoints"),
+        "expected a scored-0 line, got:\n{stdout}"
     );
 }
 
 #[test]
 fn openrouter_backend_dispatches_without_network() {
-    // Iter 30: bare `--judge-backend openrouter` reads its model from
-    // OPENROUTER_JUDGE_MODEL and its key from the shared
+    // Iter 30: bare `--score-backend openrouter` reads its model from
+    // OPENROUTER_SCORE_MODEL and its key from the shared
     // RANKINGS_API_KEY. Zero-sample run proves dispatch + from_env
     // wiring without touching OpenRouter.
     let (_dir, db) = synced_db("openrouter-cli");
-    std::env::set_var("OPENROUTER_JUDGE_MODEL", "probe/model");
+    std::env::set_var("OPENROUTER_SCORE_MODEL", "probe/model");
     std::env::set_var("RANKINGS_API_KEY", "probe-dummy");
     let out = Command::new(bin())
         .arg("--db")
         .arg(&db)
-        .arg("--judge-backend")
+        .arg("--score-backend")
         .arg("openrouter")
         .arg("--sample-rate")
         .arg("0")
         .output()
         .unwrap();
-    std::env::remove_var("OPENROUTER_JUDGE_MODEL");
+    std::env::remove_var("OPENROUTER_SCORE_MODEL");
     std::env::remove_var("RANKINGS_API_KEY");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -67,8 +67,8 @@ fn openrouter_backend_dispatches_without_network() {
         "zero-sample run must succeed without network.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("judged 0 endpoints"),
-        "expected a judged-0 line, got:\n{stdout}"
+        stdout.contains("scored 0 endpoints"),
+        "expected a scored-0 line, got:\n{stdout}"
     );
 }
 
@@ -79,7 +79,7 @@ fn max_calls_cap_fails_closed_live() {
     let out = Command::new(bin())
         .arg("--db")
         .arg(&db)
-        .arg("--judge-backend")
+        .arg("--score-backend")
         .arg("baseten")
         .arg("--max-calls")
         .arg("1")
@@ -95,5 +95,24 @@ fn max_calls_cap_fails_closed_live() {
     assert!(
         stderr.contains("over the max_calls cap"),
         "expected a cap-breach error, got:\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+#[test]
+fn processing_only_run_reports_offline_scoring() {
+    // Iter 32: a bare run (no --score flags) still reports the
+    // automatic offline pass. Fixtures carry no AA indexes, so the
+    // count is 0 — the line proves the pass ran.
+    let (_dir, db) = synced_db("offline-line");
+    let out = Command::new(bin()).arg("--db").arg(&db).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "processing-only run must succeed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("scored 0 endpoints (offline)"),
+        "expected an offline-scored line, got:\n{stdout}"
     );
 }

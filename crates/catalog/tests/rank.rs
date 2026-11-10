@@ -4,20 +4,20 @@ mod common;
 
 use common::{fixtures_dir, synced_db};
 use pennyrouter_catalog::{
-    load_ranking_doc, publish_ranking, rank_catalog, run_judging, run_processing, verify_ranking,
-    Assist, Catalog, EndpointIndex, EndpointJudgment, EndpointRow, ModelRow, Promos, RecordedJudge,
+    load_ranking_doc, publish_ranking, rank_catalog, run_scoring, run_processing, verify_ranking,
+    Assist, Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelRow, Promos, RecordedScorer,
     Trends,
 };
 
 const STAMP: &str = "2026-03-04T05:06:07Z";
 
-/// Fixture DB with deterministic + judged columns filled.
+/// Fixture DB with deterministic + scored columns filled.
 fn ranked_inputs(test: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let (dir, db) = synced_db(test);
     let catalog = Catalog::open(&db).unwrap();
     run_processing(&catalog, STAMP).unwrap();
-    let judge = RecordedJudge::load(&fixtures_dir().join("judgments.json")).unwrap();
-    run_judging(&catalog, &judge, STAMP).unwrap();
+    let score = RecordedScorer::load(&fixtures_dir().join("scores.json")).unwrap();
+    run_scoring(&catalog, &score, STAMP).unwrap();
     drop(catalog);
     (dir, db)
 }
@@ -177,9 +177,9 @@ fn tie_db(path: &std::path::Path) {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -196,16 +196,16 @@ fn tie_db(path: &std::path::Path) {
         supports_decisions: None,
         price_override_tokens: None,
     };
-    let judgment = EndpointJudgment {
+    let score = EndpointScore {
         quality_tier: Some("standard".to_string()),
         quality_score: None,
-        judged_at: "t".to_string(),
-        judge_model: None,
-        judge_prompt: None,
+        scored_at: "t".to_string(),
+        score_model: None,
+        score_prompt: None,
     };
     for ep in catalog.endpoints_for("syn/tie").unwrap() {
         catalog.update_endpoint_index(ep.id, &index(1.0)).unwrap();
-        catalog.update_endpoint_judgment(ep.id, &judgment).unwrap();
+        catalog.update_endpoint_score(ep.id, &score).unwrap();
     }
 }
 
@@ -291,9 +291,9 @@ fn unknown_scores_sort_after_known_scores() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -304,14 +304,14 @@ fn unknown_scores_sort_after_known_scores() {
             .unwrap()
             .id;
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some("standard".to_string()),
                     quality_score: score,
-                    judged_at: "t".to_string(),
-                    judge_model: None,
-                    judge_prompt: None,
+                    scored_at: "t".to_string(),
+                    score_model: None,
+                    score_prompt: None,
                 },
             )
             .unwrap();
@@ -372,9 +372,9 @@ fn tag_breaks_same_provider_ties_regardless_of_insertion_order() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -439,9 +439,9 @@ fn promo_free_eligibility_published_with_validity() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -545,9 +545,9 @@ fn permanent_free_beats_promo_regardless_of_row_order() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -646,9 +646,9 @@ fn promo_active_leads_and_expired_falls_back() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();

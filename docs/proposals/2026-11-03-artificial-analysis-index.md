@@ -1,6 +1,10 @@
 # Proposal: Artificial Analysis index ingestion — `benchmarks.artificial_analysis.*`
 
-> Date: 2026-11-03 · Author: freeclaw · Status: Proposed (not yet implemented)
+> Date: 2026-11-03 · Author: freeclaw · Status: Implemented (Iter 31).
+> As-built deviations from the draft: values round from floats (§2,
+> §4.1); `ModelRow` untouched — `ModelPayload` + `aa_coding_map()`
+> instead (§4.2); UI shows the index in the model header, not a
+> column (§5); first consumer is judging scope, not minindex (§8).
 > Depends on: `upstream/main` @ `a79e5a8` — schema v5, Iter 28 pinned-model routes.
 > Companion: `docs/proposals/2026-11-03-minindex-filter.md` (gateway `minindex` suffix — this doc is the catalog prerequisite).
 
@@ -34,7 +38,7 @@ Per `https://openrouter.ai/openapi.json` (server `https://openrouter.ai/api/v1`)
 }
 ```
 
-- `intelligence_index`, `coding_index`, `agentic_index` are `integer | null` (observed range `0..100`, treat as `0..100` inclusive; clamp, don't reject).
+- `intelligence_index`, `coding_index`, `agentic_index` are `number | null` (observed range `0..100`, treat as `0..100` inclusive; out-of-range reads as `None`/unknown, never clamped into range — a bogus `999` must not sort first). Live values mix integers and floats (observed `64.6`); floats round to the nearest integer.
 - `design_arena[]` is `array of {arena, category, elo, win_rate, rank}` — out of scope for this iteration (ELO, not a single threshold).
 - Dedicated `GET /benchmarks` endpoint exists with `source`/`task_type` filters — not fetched now; if needed later, it's a new gather step, not this proposal.
 - Variants (`:batch`, `:free`, `:nitro`) carry the same `benchmarks` object as their base id — no special casing.
@@ -108,12 +112,13 @@ fn extract_aa_index(model_payload: &Value, key: &str) -> Option<i64> {
         .get("artificial_analysis")?
         .get(key)?;
     let n = match v {
-        Value::Number(n) => n.as_i64()?,
+        Value::Number(n) => n.as_f64()?,
         _ => return None, // null or non-number → None (unknown)
     };
-    // Clamp to 0..100 inclusive — garbage like 999 never sorts first.
-    // Negative already excluded by range, but reject explicitly.
-    if (0..=100).contains(&n) { Some(n) } else { None }
+    if !n.is_finite() || !(0.0..=100.0).contains(&n) {
+        return None;
+    }
+    Some(n.round() as i64)
 }
 ```
 
@@ -139,9 +144,8 @@ pub fn run_processing(catalog: &Catalog, processed_at: &str) -> Result<ProcessSu
 
 ### 4.2 Store — `crates/catalog/src/store.rs`
 
-- `ModelRow` gains `aa_intelligence_index`, `aa_coding_index`, `aa_agentic_index: Option<i64>` + `ENDPOINT_COLS`-style `MODEL_COLS` + updated `model_row` mapper.
 - `update_model_index(&self, model_id: &str, index: &ModelIndex)` — `UPDATE models SET aa_* = ? ... WHERE model_id = ?`.
-- `all_models()` helper (or reuse existing query) for the model loop.
+- `all_models()` returns lightweight `ModelPayload { model_id, payload }` for the model loop; `aa_coding_map()` returns the non-null coding pairs for the snapshot. `ModelRow` deliberately untouched (no caller needs the columns back on the row).
 
 No change to `fetch.rs` — `GET /v1/models` already returns `benchmarks`; live sync on `a79e5a8` pulled `451/248` without code change.
 
@@ -159,7 +163,7 @@ pub struct Snapshot {
 
 Loaded at startup and on every `RELOAD_INTERVAL_SECS` reload (default 60s) from `models.aa_coding_index` where non-null. `Offering` does not need the field — the filter consults the model-level map before ranking.
 
-`GET /ui` (when `GATEWAY_UI=1`) adds a `Coding index` column to the model table where known.
+`GET /ui` (when `GATEWAY_UI=1`) shows the index in each model header (`· coding N`) where known — a per-row column would repeat a model-level value on every offering row.
 
 ## 6. What not to do
 
@@ -171,7 +175,7 @@ Loaded at startup and on every `RELOAD_INTERVAL_SECS` reload (default 60s) from 
 
 Unit:
 
-- `extract_aa_index` over `null`, missing `benchmarks`, non-number, out-of-range (`-1`, `999`), valid `0..100`.
+- `extract_aa_index` over `null`, missing `benchmarks`, non-number, out-of-range (`-1`, `999`, `100.6`), valid ints and rounding floats (`30.6` → `31`, `51.5` → `52`).
 - `migrate()` from a v5 DB (no AA columns) adds all three; idempotent.
 - `run_processing` on fixture models with/without `benchmarks` writes expected `aa_*` and leaves payload untouched.
 
@@ -182,11 +186,11 @@ Integration:
 
 Live smoke (optional, same bar as Iter 18):
 
-- `catalog-sync --fetch-openrouter` against real OpenRouter: `SELECT COUNT(*) FROM models WHERE aa_coding_index IS NOT NULL` ≈ `160+` (matches live `163` snapshot).
+- `catalog-sync --fetch-openrouter` against real OpenRouter: `SELECT COUNT(*) FROM models WHERE aa_coding_index IS NOT NULL` ≈ `160+` (observed `168/469` on 2026-11-10; intelligence `89`, agentic `136`).
 
 ## 8. Rollout
 
-Single iteration — schema bump + processing + store + snapshot plumbing. No gateway behavior change until the companion `minindex` proposal lands (the map is loaded but unused). Both proposals can merge in either order; `minindex` without this data simply fails closed per its contract.
+Single iteration — schema bump + processing + store + snapshot plumbing. No gateway behavior change: the map is display-only until a consumer lands. First consumer is judging scope (AA + popular subset); the `minindex` companion stays proposed. Deploy note: a v6 gateway rejects v5 artifacts, so the first v6 publish must land before (or with) the gateway — reloads keep last-good across the window, and a boot on v5 stays in standby passthrough until the first v6 publish.
 
 ## References
 

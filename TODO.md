@@ -208,3 +208,25 @@ cheap judge model, classifier-based routing.
       OpenAI-chat core, keyed by the shared `RANKINGS_API_KEY`;
       cataloged like the other live backends. Test: stub-server
       round trip + fail-closed matrix + catalog + CLI dispatch.
+- [x] **Iter 31 — Artificial Analysis index ingestion.** Schema
+      v5→v6: `models` gains `aa_intelligence/coding/agentic_index`
+      (ints rounded from live int/float values, `None` when
+      absent/null/non-numeric/out-of-range), distilled by
+      `run_processing`; gateway snapshot carries the coding map
+      (display-only, `/ui` model headers) for future filters.
+      Deploy with/after the first v6 publish (v6 gateway rejects
+      v5 artifacts; last-good covers reloads). Test: extract
+      vectors + migrate + processing + snapshot carry + live
+      one-shot (168/469 coding).
+- [x] **Iter 32 — Scoring rename + offline tiers.** Judging →
+      scoring end to end (`Scorer`, `--score-backend`,
+      `scorers.json`/`scores.json`, `OPENROUTER_SCORE_MODEL`,
+      `MODAL_SCORE_URL`, schema v6→v7 audit-column rename);
+      `OfflineScorer` derives tiers from the AA coding index
+      (70+ high, 40+ standard, else low) in `run_processing`
+      on untiered rows only — online verdicts always win.
+      Deploy with/after the first v7 publish (v7 gateway rejects
+      v6 artifacts) + rename the two env vars in `.env`. Test:
+      cutoff/clamp/identity units + processing tiers/meta +
+      precedence + v6→v7 migrate + CLI offline line; full
+      workspace green (39 suites).

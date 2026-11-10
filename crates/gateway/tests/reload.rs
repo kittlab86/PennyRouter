@@ -2,7 +2,7 @@
 //! restart, and a corrupt DB keeps the last good snapshot serving.
 
 use axum::http::HeaderMap;
-use pennyrouter_catalog::{now_rfc3339, Catalog, EndpointIndex, EndpointRow, ModelRow};
+use pennyrouter_catalog::{now_rfc3339, Catalog, EndpointIndex, EndpointRow, ModelIndex, ModelRow};
 use pennyrouter_gateway::{routing::Router, Metrics};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -43,9 +43,9 @@ fn add_model(db: &std::path::Path, model_id: &str, provider: &str, prompt_price:
             supports_decisions: None,
             quality_tier: None,
             quality_score: None,
-            judged_at: None,
-            judge_model: None,
-            judge_prompt: None,
+            scored_at: None,
+            score_model: None,
+            score_prompt: None,
             price_override_tokens: None,
         })
         .unwrap();
@@ -84,6 +84,33 @@ fn routes(router: &Router, model: &str) -> Option<String> {
     router
         .route_request(&HeaderMap::new(), body.as_bytes())
         .map(|(_, decision)| decision.provider)
+}
+
+/// Iter 31: the snapshot carries the AA coding index per model
+/// (display + future filters); the UI projection exposes it.
+#[test]
+fn snapshot_carries_aa_coding_index() {
+    let (_dir, db) = seed_db("aa-coding");
+    let catalog = Catalog::open(&db).unwrap();
+    catalog
+        .update_model_index(
+            "test/reload-a",
+            &ModelIndex {
+                aa_intelligence_index: Some(51),
+                aa_coding_index: Some(71),
+                aa_agentic_index: None,
+            },
+        )
+        .unwrap();
+    drop(catalog);
+    let router = Router::load(&db).unwrap();
+    let (_, coding, _) = router
+        .ui_summary()
+        .models
+        .into_iter()
+        .find(|(id, _, _)| id == "test/reload-a")
+        .unwrap();
+    assert_eq!(coding, Some(71));
 }
 
 #[test]

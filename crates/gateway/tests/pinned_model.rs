@@ -39,9 +39,9 @@ fn build_db(path: &std::path::Path) {
             supports_decisions: None,
             quality_tier: None,
             quality_score: None,
-            judged_at: None,
-            judge_model: None,
-            judge_prompt: None,
+            scored_at: None,
+            score_model: None,
+            score_prompt: None,
             price_override_tokens: None,
         })
         .unwrap();
@@ -87,9 +87,9 @@ fn build_db(path: &std::path::Path) {
         supports_decisions: None,
         quality_tier: None,
         quality_score: None,
-        judged_at: None,
-        judge_model: None,
-        judge_prompt: None,
+        scored_at: None,
+        score_model: None,
+        score_prompt: None,
         price_override_tokens: None,
     })
     .unwrap();

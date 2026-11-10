@@ -235,7 +235,7 @@ async fn endpoints(
             body.push_str(
                 "<table><tr><th>model</th><th>provider</th><th>tag</th>\
                 <th>prompt $/M</th><th>completion $/M</th><th>class</th>\
-                <th>tier</th><th>score</th><th>judged by</th></tr>",
+                <th>tier</th><th>score</th><th>scored by</th></tr>",
             );
             for ep in &endpoints {
                 if !filter.is_empty() && ep.model_id != filter {
@@ -246,7 +246,7 @@ async fn endpoints(
                     .parse::<serde_json::Value>()
                     .ok()
                     .and_then(|p| p.get("tag").and_then(|t| t.as_str()).map(str::to_string));
-                let judged = match (&ep.judge_model, &ep.judge_prompt) {
+                let scored = match (&ep.score_model, &ep.score_prompt) {
                     (Some(m), Some(p)) => format!("{m} / {p}"),
                     _ => "-".to_string(),
                 };
@@ -271,7 +271,7 @@ async fn endpoints(
                     ep.quality_score
                         .map(|v| format!("{v:.3}"))
                         .unwrap_or_else(|| "-".to_string()),
-                    esc(&judged),
+                    esc(&scored),
                 ));
             }
             body.push_str("</table>");

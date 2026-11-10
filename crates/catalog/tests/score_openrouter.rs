@@ -1,19 +1,16 @@
-//! Phase 4: the Baseten live judge posts OpenAI-shaped chat requests and
-//! reads judgments back. A std-only stub server stands in for Baseten, so
-//! no test calls the network; the recorded fixture pins the output shape.
+//! Iter 30: the OpenRouter live scorer posts OpenAI-shaped chat requests
+//! and reads scores back. A std-only stub server stands in for
+//! OpenRouter, so no test calls the network. The scorer model comes
+//! from `OPENROUTER_SCORE_MODEL` (fail-closed, nothing pinned) and
+//! the key is the shared `RANKINGS_API_KEY`.
 
-mod common;
-
-use common::{fixtures_dir, synced_db};
-use pennyrouter_catalog::{run_judging, BasetenJudge, Judge, RecordedJudge};
+use pennyrouter_catalog::{Scorer, OpenRouterScorer};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
-const STAMP: &str = "2026-10-28T00:00:00Z";
-
-/// Canned `POST /chat/completions` response carrying one judgment.
+/// Canned `POST /chat/completions` response carrying one score.
 fn chat_response(content: &str) -> String {
     let content = serde_json::to_string(content).unwrap();
     format!(
@@ -84,16 +81,19 @@ fn request_body(request: &str) -> Value {
 }
 
 #[test]
-fn live_round_trip_posts_chat_request_and_reads_judgment() {
+fn live_round_trip_posts_chat_request_and_reads_score() {
     let (base_url, server) = stub_server(vec![chat_response(
         r#"{"quality_tier": "high", "quality_score": 0.9}"#,
     )]);
-    let judge = BasetenJudge::new(&base_url, "test-key", "test-model").unwrap();
-    let out = judge
-        .judge("m", "p", &json!({"tag": "t", "price": 1}))
+    let score = OpenRouterScorer::new(&base_url, "test-key", "test-model").unwrap();
+    let out = score
+        .score("m", "p", &json!({"tag": "t", "price": 1}))
         .unwrap();
     assert_eq!(out.quality_tier.as_deref(), Some("high"));
     assert_eq!(out.quality_score, Some(0.9));
+    let identity = score.identity();
+    assert_eq!(identity.model, "test-model");
+    assert_eq!(identity.prompt_version, pennyrouter_catalog::PROMPT_VERSION);
 
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 1);
@@ -121,35 +121,95 @@ fn invalid_model_output_is_an_error() {
     ];
     let responses = bad.iter().map(|c| chat_response(c)).collect();
     let (base_url, server) = stub_server(responses);
-    let judge = BasetenJudge::new(&base_url, "test-key", "test-model").unwrap();
+    let score = OpenRouterScorer::new(&base_url, "test-key", "test-model").unwrap();
     for content in bad {
-        assert!(
-            judge.judge("m", "p", &json!({})).is_err(),
-            "should reject model output: {content}"
-        );
+        // (No `unwrap_err`: `Score` has no `Debug`, like the scorer.)
+        match score.score("m", "p", &json!({})) {
+            Ok(_) => panic!("should reject model output: {content}"),
+            Err(err) => assert!(
+                err.to_string().contains("openrouter"),
+                "error names the backend: {err}"
+            ),
+        }
     }
     assert_eq!(server.join().unwrap().len(), 3);
 }
 
+/// Save/restore guard: the fail-closed tests below mutate real
+/// variable names, which must not leak into other tests or clobber
+/// ambient developer values.
+struct EnvGuard {
+    saved: Vec<(String, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn take(names: &[&str]) -> Self {
+        let saved = names
+            .iter()
+            .map(|name| (name.to_string(), std::env::var(name).ok()))
+            .collect();
+        Self { saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in &self.saved {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+/// from_env failure text. (No `unwrap_err`: the scorer has no
+/// `Debug` impl on purpose, so the key can never leak into one.)
+fn from_env_err() -> String {
+    OpenRouterScorer::from_env()
+        .err()
+        .expect("from_env must fail here")
+        .to_string()
+}
+
 #[test]
-fn baseten_recorded_fixture_yields_expected_values() {
-    let (_dir, db) = synced_db("baseten-recorded");
-    let catalog = pennyrouter_catalog::Catalog::open(&db).unwrap();
-    let judge = RecordedJudge::load(&fixtures_dir().join("judge-baseten.json")).unwrap();
-    let summary = run_judging(&catalog, &judge, STAMP).unwrap();
-    assert_eq!(summary.judged, 4);
-    assert_eq!(summary.matched, 2);
+fn from_env_fails_closed_without_model_or_key() {
+    let _guard = EnvGuard::take(&["OPENROUTER_SCORE_MODEL", "RANKINGS_API_KEY"]);
+    // Model missing or empty fails before the key is even read.
+    std::env::remove_var("OPENROUTER_SCORE_MODEL");
+    std::env::set_var("RANKINGS_API_KEY", "key");
+    let err = from_env_err();
+    assert!(
+        err.contains("OPENROUTER_SCORE_MODEL"),
+        "model miss names the variable: {err}"
+    );
+    std::env::set_var("OPENROUTER_SCORE_MODEL", "");
+    let err = from_env_err();
+    assert!(
+        err.contains("OPENROUTER_SCORE_MODEL"),
+        "empty model names the variable: {err}"
+    );
+    // Model set, key missing or empty fails on the key.
+    std::env::set_var("OPENROUTER_SCORE_MODEL", "some/model");
+    std::env::remove_var("RANKINGS_API_KEY");
+    let err = from_env_err();
+    assert!(
+        err.contains("RANKINGS_API_KEY"),
+        "key miss names the variable: {err}"
+    );
+    std::env::set_var("RANKINGS_API_KEY", "");
+    let err = from_env_err();
+    assert!(
+        err.contains("RANKINGS_API_KEY"),
+        "empty key names the variable: {err}"
+    );
+    // Both set builds, with the env model as its identity.
+    std::env::set_var("RANKINGS_API_KEY", "key");
+    let score = OpenRouterScorer::from_env().unwrap();
+    assert_eq!(score.identity().model, "some/model");
+}
 
-    let eps = catalog.endpoints_for("openai/gpt-6.1-terra-pro").unwrap();
-    assert_eq!(eps.len(), 3);
-    // Only the untagged "openai" offering matches (ORDER BY id: flex, standard, fast).
-    assert_eq!(eps[0].quality_tier, None);
-    assert_eq!(eps[1].quality_tier.as_deref(), Some("high"));
-    assert_eq!(eps[1].quality_score, Some(0.91));
-    assert_eq!(eps[1].judged_at.as_deref(), Some(STAMP));
-    assert_eq!(eps[2].quality_tier, None);
-
-    let tencent = &catalog.endpoints_for("tencent/hy-mt2-1.8b").unwrap()[0];
-    assert_eq!(tencent.quality_tier.as_deref(), Some("standard"));
-    assert_eq!(tencent.quality_score, Some(0.68));
+#[test]
+fn production_base_url_targets_openrouter_chat() {
+    assert_eq!(OpenRouterScorer::BASE_URL, "https://openrouter.ai/api/v1");
 }

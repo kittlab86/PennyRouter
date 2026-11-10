@@ -76,7 +76,7 @@ session.
   precision class across all models — same paid-only filter, budget,
   throttle skip, stickiness (under the full tagged id namespace),
   and deterministic tie-breaks (cost, model id, provider) as the
-  `low` tier, minus its judged-tier floor. Fails closed like
+  `low` tier, minus its scored-tier floor. Fails closed like
   virtual ids (`no_eligible_offering` 503, `budget_exceeded` 400)
   instead of leaking the tagged id upstream; exactly-once (tags
   never retry). Unknown base models still pass through untouched,
@@ -176,7 +176,7 @@ session.
   meta-model routes to any zero-cost offering and rewrites to its
   backend id, re-routing pins that stopped being free.
 - Quality floors (Iter 14): each virtual tier promises a minimum
-  judged quality — `low` needs any judged tier, `think` needs `high`
+  scored quality — `low` needs any scored tier, `think` needs `high`
   (`free` needs none). A tier whose candidates all sit below its
   floor rejects with `quality_floor_unmet` (503) instead of serving
   below the promise.

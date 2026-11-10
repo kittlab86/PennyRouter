@@ -1,4 +1,4 @@
-//! Phase 4: the Modal live judge posts OpenAI-shaped chat requests to
+//! Phase 4: the Modal live scorer posts OpenAI-shaped chat requests to
 //! the deployed endpoint, authenticated by the Modal proxy-token pair. A
 //! std-only stub server stands in, so no test calls the network; the
 //! recorded fixture pins the output shape.
@@ -6,7 +6,7 @@
 mod common;
 
 use common::{fixtures_dir, synced_db};
-use pennyrouter_catalog::{run_judging, Judge, ModalJudge, RecordedJudge};
+use pennyrouter_catalog::{run_scoring, Scorer, ModalScorer, RecordedScorer};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -14,7 +14,7 @@ use std::thread;
 
 const STAMP: &str = "2026-10-28T00:00:00Z";
 
-/// Canned `POST /chat/completions` response carrying one judgment.
+/// Canned `POST /chat/completions` response carrying one score.
 fn chat_response(content: &str) -> String {
     let content = serde_json::to_string(content).unwrap();
     format!(
@@ -89,9 +89,9 @@ fn live_round_trip_posts_chat_request_with_proxy_auth() {
     let (base_url, server) = stub_server(vec![chat_response(
         r#"{"quality_tier": "standard", "quality_score": 0.77}"#,
     )]);
-    let judge = ModalJudge::new(&base_url, "test-id", "test-secret", "test-model").unwrap();
-    let out = judge
-        .judge("m", "p", &json!({"tag": "t", "price": 1}))
+    let score = ModalScorer::new(&base_url, "test-id", "test-secret", "test-model").unwrap();
+    let out = score
+        .score("m", "p", &json!({"tag": "t", "price": 1}))
         .unwrap();
     assert_eq!(out.quality_tier.as_deref(), Some("standard"));
     assert_eq!(out.quality_score, Some(0.77));
@@ -123,10 +123,10 @@ fn invalid_model_output_is_an_error() {
     ];
     let responses = bad.iter().map(|c| chat_response(c)).collect();
     let (base_url, server) = stub_server(responses);
-    let judge = ModalJudge::new(&base_url, "test-id", "test-secret", "test-model").unwrap();
+    let score = ModalScorer::new(&base_url, "test-id", "test-secret", "test-model").unwrap();
     for content in bad {
         assert!(
-            judge.judge("m", "p", &json!({})).is_err(),
+            score.score("m", "p", &json!({})).is_err(),
             "should reject model output: {content}"
         );
     }
@@ -137,9 +137,9 @@ fn invalid_model_output_is_an_error() {
 fn modal_recorded_fixture_yields_expected_values() {
     let (_dir, db) = synced_db("modal-recorded");
     let catalog = pennyrouter_catalog::Catalog::open(&db).unwrap();
-    let judge = RecordedJudge::load(&fixtures_dir().join("judge-modal.json")).unwrap();
-    let summary = run_judging(&catalog, &judge, STAMP).unwrap();
-    assert_eq!(summary.judged, 4);
+    let score = RecordedScorer::load(&fixtures_dir().join("scores-modal.json")).unwrap();
+    let summary = run_scoring(&catalog, &score, STAMP).unwrap();
+    assert_eq!(summary.scored, 4);
     assert_eq!(summary.matched, 2);
 
     let eps = catalog.endpoints_for("openai/gpt-6.1-terra-pro").unwrap();
@@ -149,7 +149,7 @@ fn modal_recorded_fixture_yields_expected_values() {
     assert_eq!(eps[1].quality_tier, None);
     assert_eq!(eps[2].quality_tier.as_deref(), Some("standard"));
     assert_eq!(eps[2].quality_score, Some(0.77));
-    assert_eq!(eps[2].judged_at.as_deref(), Some(STAMP));
+    assert_eq!(eps[2].scored_at.as_deref(), Some(STAMP));
 
     let tencent = &catalog.endpoints_for("tencent/hy-mt2-1.8b").unwrap()[0];
     assert_eq!(tencent.quality_tier.as_deref(), Some("high"));

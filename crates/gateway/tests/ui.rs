@@ -5,7 +5,9 @@
 //! Disabled means no `/ui` route at all: the path falls through to
 //! the fallback proxy like any unknown path.
 
-use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointJudgment, EndpointRow, ModelRow};
+use pennyrouter_catalog::{
+    Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelIndex, ModelRow,
+};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -49,9 +51,9 @@ fn scratch_db(test: &str) -> std::path::PathBuf {
             supports_decisions: None,
             quality_tier: Some("high".to_string()),
             quality_score: Some(0.9),
-            judged_at: Some("t".to_string()),
-            judge_model: Some("recorded".to_string()),
-            judge_prompt: Some("recorded".to_string()),
+            scored_at: Some("t".to_string()),
+            score_model: Some("recorded".to_string()),
+            score_prompt: Some("recorded".to_string()),
             price_override_tokens: None,
         })
         .unwrap();
@@ -197,9 +199,9 @@ async fn ui_shows_popular_section() {
             supports_decisions: None,
             quality_tier: None,
             quality_score: None,
-            judged_at: None,
-            judge_model: None,
-            judge_prompt: None,
+            scored_at: None,
+            score_model: None,
+            score_prompt: None,
             price_override_tokens: None,
         })
         .unwrap();
@@ -428,7 +430,7 @@ fn preview_db_inner(test: &str, cheap_price: f64, _tag: &str) -> std::path::Path
             })
             .unwrap();
     }
-    // `insert_endpoint` stores core columns only; indexed + judgment
+    // `insert_endpoint` stores core columns only; indexed + score
     // columns land via the update calls (same pattern as the virtual
     // model fixtures).
     let put = |catalog: &Catalog,
@@ -458,9 +460,9 @@ fn preview_db_inner(test: &str, cheap_price: f64, _tag: &str) -> std::path::Path
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -483,14 +485,14 @@ fn preview_db_inner(test: &str, cheap_price: f64, _tag: &str) -> std::path::Path
             )
             .unwrap();
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 row_id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some(tier.to_string()),
                     quality_score: Some(score),
-                    judged_at: "t".to_string(),
-                    judge_model: Some("recorded".to_string()),
-                    judge_prompt: Some("recorded".to_string()),
+                    scored_at: "t".to_string(),
+                    score_model: Some("recorded".to_string()),
+                    score_prompt: Some("recorded".to_string()),
                 },
             )
             .unwrap();
@@ -598,6 +600,16 @@ async fn ui_prices_render_per_million_tokens() {
                 },
             )
             .unwrap();
+        catalog
+            .update_model_index(
+                "m/code",
+                &ModelIndex {
+                    aa_intelligence_index: None,
+                    aa_coding_index: Some(71),
+                    aa_agentic_index: None,
+                },
+            )
+            .unwrap();
     }
     let router = Arc::new(pennyrouter_gateway::routing::Router::load(&db).expect("router loads"));
     let state =
@@ -630,6 +642,10 @@ async fn ui_prices_render_per_million_tokens() {
     assert!(
         !body.contains(">unknown<"),
         "stored class unknown renders as -, not unknown"
+    );
+    assert!(
+        body.contains("coding 71"),
+        "AA coding index shows on the model header"
     );
 }
 

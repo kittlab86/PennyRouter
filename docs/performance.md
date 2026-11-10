@@ -28,7 +28,7 @@ The product is built from scratch in Rust to be fast on tiny resources.
   +0.28ms / p99 +0.43ms, sse +0.20ms / +0.11ms, 0 errors; gateway
   peak RSS 15.0–15.5 MiB flat across runs (r2–r5 `stats.jsonl`).
   Virtual routed load (`openrouter/pair/low`, 20 sessions × 30s,
-  judged fixture catalog): 4163 requests, 0 errors, peak RSS 11 MiB
+  scored fixture catalog): 4163 requests, 0 errors, peak RSS 11 MiB
   (local release binary). No buffer growth, no leak signature — no
   memory lever pulled; I05 lock work stays deferred behind numbers.
 - Chat/streaming workloads and the overhead report landed in Iter 3

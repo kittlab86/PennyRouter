@@ -1,4 +1,4 @@
-//! Catalog DB: schema, store, sync, processing, judging, ranking,
+//! Catalog DB: schema, store, sync, processing, scoring, ranking,
 //! pricing, and artifact publishing.
 //!
 //! The catalog sync is a separate process from the gateway; this crate owns
@@ -6,12 +6,13 @@
 
 mod artifact;
 mod fetch;
-mod judge;
-mod judge_baseten;
-mod judge_catalog;
-mod judge_modal;
-mod judge_openai;
-mod judge_openrouter;
+mod score;
+mod score_baseten;
+mod score_catalog;
+mod score_modal;
+mod score_offline;
+mod score_openai;
+mod score_openrouter;
 mod popular;
 mod price;
 mod process;
@@ -22,18 +23,19 @@ mod sync;
 
 pub use artifact::{now_rfc3339, publish, sha256_hex, verify, Manifest};
 pub use fetch::{fetch_openrouter, fetch_openrouter_extra, Fetched};
-pub use judge::{
-    endpoint_tag, run_judging, run_judging_selected, Judge, JudgeIdentity, JudgeSummary, NullJudge,
-    RecordedJudge,
+pub use score::{
+    endpoint_tag, run_scoring, run_scoring_selected, Scorer, ScorerIdentity, ScorerSummary, NullScorer,
+    RecordedScorer,
 };
-pub use judge_baseten::BasetenJudge;
-pub use judge_catalog::{
-    build_judge, plan_live_calls, select_endpoints, spend_line, JudgeCatalog, JudgeEntry,
-    JudgePlan, JudgePolicy, KNOWN_BACKENDS,
+pub use score_baseten::BasetenScorer;
+pub use score_catalog::{
+    build_score, plan_live_calls, select_endpoints, spend_line, ScorerCatalog, ScorerEntry,
+    ScorerPlan, ScorerPolicy, KNOWN_BACKENDS,
 };
-pub use judge_modal::ModalJudge;
-pub use judge_openai::PROMPT_VERSION;
-pub use judge_openrouter::OpenRouterJudge;
+pub use score_modal::ModalScorer;
+pub use score_offline::{OfflineScorer, RULESET_VERSION};
+pub use score_openai::PROMPT_VERSION;
+pub use score_openrouter::OpenRouterScorer;
 pub use popular::{
     aggregate_apps, aggregate_models, fetch_popularity, read_popularity, store_popularity,
     Popularity, POPULAR_APPS_TOP_N, POPULAR_MODELS_TOP_N, RANKINGS_WINDOW_DAYS,
@@ -48,13 +50,15 @@ pub use rank::{
     Signals, TrendStats, Trends,
 };
 pub use schema::{SCHEMA_VERSION, V1_DDL};
-pub use store::{Catalog, EndpointIndex, EndpointJudgment, EndpointRow, ModelRow};
+pub use store::{
+    Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelIndex, ModelPayload, ModelRow,
+};
 pub use sync::{load_endpoints_dir, run_fixture_sync, Summary};
 
 use std::fmt;
 
 /// Catalog error: sqlite, IO, JSON, time, schema, malformed input,
-/// live-gather or live-judge failures (transport vs. backend behavior).
+/// live-gather or live-score failures (transport vs. backend behavior).
 #[derive(Debug)]
 pub enum Error {
     Sqlite(rusqlite::Error),
@@ -65,7 +69,7 @@ pub enum Error {
     InvalidFixture(String),
     Http(reqwest::Error),
     Fetch(String),
-    Judge(String),
+    Scorer(String),
 }
 
 impl fmt::Display for Error {
@@ -79,7 +83,7 @@ impl fmt::Display for Error {
             Error::InvalidFixture(e) => write!(f, "invalid fixture: {e}"),
             Error::Http(e) => write!(f, "http: {e}"),
             Error::Fetch(e) => write!(f, "fetch: {e}"),
-            Error::Judge(e) => write!(f, "judge: {e}"),
+            Error::Scorer(e) => write!(f, "score: {e}"),
         }
     }
 }
@@ -95,7 +99,7 @@ impl std::error::Error for Error {
             Error::InvalidFixture(_) => None,
             Error::Http(e) => Some(e),
             Error::Fetch(_) => None,
-            Error::Judge(_) => None,
+            Error::Scorer(_) => None,
         }
     }
 }

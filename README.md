@@ -32,7 +32,7 @@ UIs, with Docker and Terraform (Hetzner) deploys. See
 - Minimal added latency; support requests up to ~1M tokens (bytes/4 estimate, 4 MiB cap).
 - OpenAI-compatible input; OpenRouter is the first backend target.
 - The incoming request carries the backend serving key (pure BYOK);
-  config keys (catalog judge keys, provider URLs) live in the
+  config keys (catalog score keys, provider URLs) live in the
   gitignored root `.env` overlay over the committed `.env.dev`.
 
 ## Docs

@@ -3,7 +3,7 @@
 
 use axum::{body::Bytes, http::StatusCode, routing::post, Router};
 use pennyrouter_catalog::{
-    publish_ranking, rank_catalog, Assist, Catalog, EndpointIndex, EndpointJudgment, EndpointRow,
+    publish_ranking, rank_catalog, Assist, Catalog, EndpointIndex, EndpointScore, EndpointRow,
     ModelRow, Promos, Trends,
 };
 use std::{
@@ -55,9 +55,9 @@ fn insert_offering(catalog: &Catalog, model: &str, provider: &str, price: f64, t
             supports_decisions: None,
             quality_tier: None,
             quality_score: None,
-            judged_at: None,
-            judge_model: None,
-            judge_prompt: None,
+            scored_at: None,
+            score_model: None,
+            score_prompt: None,
             price_override_tokens: None,
         })
         .unwrap();
@@ -80,14 +80,14 @@ fn insert_offering(catalog: &Catalog, model: &str, provider: &str, price: f64, t
         )
         .unwrap();
     catalog
-        .update_endpoint_judgment(
+        .update_endpoint_score(
             ep.id,
-            &EndpointJudgment {
+            &EndpointScore {
                 quality_tier: Some(tier.to_string()),
                 quality_score: None,
-                judged_at: "t".to_string(),
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: "t".to_string(),
+                score_model: None,
+                score_prompt: None,
             },
         )
         .unwrap();

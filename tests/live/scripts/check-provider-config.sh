@@ -21,7 +21,7 @@ for f in compose.yaml compose.dev.yaml; do
     echo "FAIL: $f does not reference env_file .env.dev"; fail=1
   fi
   for v in MODAL_BASE_URL MODAL_MODELS BASETEN_MODELS \
-      BASETEN_API_KEY MODAL_KEY_ID MODAL_KEY_SECRET MODAL_JUDGE_URL RANKINGS_API_KEY; do
+      BASETEN_API_KEY MODAL_KEY_ID MODAL_KEY_SECRET MODAL_SCORE_URL RANKINGS_API_KEY; do
     if grep -Eq "^[[:space:]]+$v: " "$ROOT/$f"; then
       echo "PASS: $f takes $v from the stack env"
     else

@@ -1,19 +1,19 @@
-//! Phase 4: live judging through a Modal-hosted model.
+//! Phase 4: live scoring through a Modal-hosted model.
 //!
 //! The deployment speaks the OpenAI chat API and authenticates by the
 //! Modal proxy-token pair in `Modal-Key`/`Modal-Secret` headers; shared
-//! prompt, request shape, and validation live in `judge_openai`. The key
+//! prompt, request shape, and validation live in `score_openai`. The key
 //! pair travels only in headers and is never logged (no `Debug` impl on
 //! purpose).
 
-use crate::judge::{Judge, Judgment};
-use crate::judge_openai::{chat_body, judgment_from_reply};
+use crate::score::{Scorer, Score};
+use crate::score_openai::{chat_body, score_from_reply};
 use crate::Error;
 use serde_json::Value;
 use std::time::Duration;
 
-/// Live judge over a Modal-hosted OpenAI-compatible chat endpoint.
-pub struct ModalJudge {
+/// Live score over a Modal-hosted OpenAI-compatible chat endpoint.
+pub struct ModalScorer {
     client: reqwest::blocking::Client,
     base_url: String,
     key_id: String,
@@ -21,8 +21,8 @@ pub struct ModalJudge {
     model: String,
 }
 
-impl ModalJudge {
-    /// Judge model the deployment serves (`GET /v1/models`).
+impl ModalScorer {
+    /// Scorer model the deployment serves (`GET /v1/models`).
     pub const MODEL: &'static str = "meta-models/Muse-Spark-Open-816B-A42B";
 
     pub fn new(base_url: &str, key_id: &str, key_secret: &str, model: &str) -> Result<Self, Error> {
@@ -38,13 +38,13 @@ impl ModalJudge {
         })
     }
 
-    /// Production judge: endpoint + proxy-token pair from the environment.
+    /// Production score: endpoint + proxy-token pair from the environment.
     /// The deployment URL is the server root; the chat API lives under
     /// `/v1`, so it is appended unless already present.
     pub fn from_env() -> Result<Self, Error> {
-        let deployment_url = judge_env("MODAL_JUDGE_URL")?;
-        let key_id = judge_env("MODAL_KEY_ID")?;
-        let key_secret = judge_env("MODAL_KEY_SECRET")?;
+        let deployment_url = score_env("MODAL_SCORE_URL")?;
+        let key_id = score_env("MODAL_KEY_ID")?;
+        let key_secret = score_env("MODAL_KEY_SECRET")?;
         Self::new(
             &api_root(&deployment_url),
             &key_id,
@@ -58,7 +58,7 @@ impl ModalJudge {
         model_id: &str,
         provider_name: &str,
         payload: &Value,
-    ) -> Result<Judgment, Error> {
+    ) -> Result<Score, Error> {
         let body = chat_body(&self.model, model_id, provider_name, payload);
         let url = format!("{}/chat/completions", self.base_url);
         let reply: Value = self
@@ -70,34 +70,34 @@ impl ModalJudge {
             .send()?
             .error_for_status()?
             .json()?;
-        judgment_from_reply("modal", &reply)
+        score_from_reply("modal", &reply)
     }
 }
 
-impl Judge for ModalJudge {
-    fn identity(&self) -> crate::judge::JudgeIdentity {
-        crate::judge::JudgeIdentity {
+impl Scorer for ModalScorer {
+    fn identity(&self) -> crate::score::ScorerIdentity {
+        crate::score::ScorerIdentity {
             model: self.model.clone(),
-            prompt_version: crate::judge_openai::PROMPT_VERSION.to_string(),
+            prompt_version: crate::score_openai::PROMPT_VERSION.to_string(),
         }
     }
 
-    fn judge(
+    fn score(
         &self,
         model_id: &str,
         provider_name: &str,
         payload: &Value,
-    ) -> Result<Judgment, Error> {
+    ) -> Result<Score, Error> {
         self.chat(model_id, provider_name, payload)
     }
 }
 
-/// One required judge setting: set and non-empty, else a keyed error.
-fn judge_env(name: &str) -> Result<String, Error> {
+/// One required score setting: set and non-empty, else a keyed error.
+fn score_env(name: &str) -> Result<String, Error> {
     let value = std::env::var(name)
-        .map_err(|_| Error::Judge(format!("{name} is not set (see .env.example)")))?;
+        .map_err(|_| Error::Scorer(format!("{name} is not set (see .env.example)")))?;
     if value.is_empty() {
-        return Err(Error::Judge(format!("{name} is empty (see .env.example)")));
+        return Err(Error::Scorer(format!("{name} is empty (see .env.example)")));
     }
     Ok(value)
 }

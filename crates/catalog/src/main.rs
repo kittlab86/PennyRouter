@@ -176,9 +176,13 @@ fn run() -> Result<(), String> {
         let _ = fs::remove_file(&work_db);
         return Err(gate);
     }
-    if args.process {
-        run_processing(&catalog, &fetched_at).map_err(|e| e.to_string())?;
-    }
+    let scored = if args.process {
+        run_processing(&catalog, &fetched_at)
+            .map_err(|e| e.to_string())?
+            .scored
+    } else {
+        0
+    };
     // Popularity pins for the gateway menu: top OpenRouter models +
     // hot apps from the public Data API (keyless syncs skip this —
     // the menu still serves virtual ids + operator env lists). A
@@ -214,11 +218,16 @@ fn run() -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let _ = fs::remove_file(&work_db);
 
+    let stage = if args.process {
+        format!(" (processed, {scored} scored offline)")
+    } else {
+        String::new()
+    };
     println!(
         "synced {} models, {} endpoints{} -> {} (version {})",
         summary.model_count,
         summary.endpoint_count,
-        if args.process { " (processed)" } else { "" },
+        stage,
         manifest_path.display(),
         manifest.version
     );

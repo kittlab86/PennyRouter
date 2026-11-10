@@ -1,9 +1,11 @@
-//! Schema v5: fixed core columns + raw JSON payloads + indexed columns
-//! (deterministic from Phase 2a, model-judged from Phase 2b, tool
-//! support from Iter 22, decision-modality support from Iter 24).
+//! Schema v7: fixed core columns + raw JSON payloads + indexed columns
+//! (deterministic from Phase 2a, model-scored from Phase 2b, tool
+//! support from Iter 22, decision-modality support from Iter 24,
+//! Artificial Analysis indexes from Iter 31, scoring-audit rename
+//! from Iter 32).
 
 /// Current schema version, recorded in `sync_meta` on init.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 7;
 
 pub const DDL: &str = "
 CREATE TABLE IF NOT EXISTS models (
@@ -11,7 +13,10 @@ CREATE TABLE IF NOT EXISTS models (
     name        TEXT NOT NULL,
     source      TEXT NOT NULL,
     payload     TEXT NOT NULL,
-    fetched_at  TEXT NOT NULL
+    fetched_at  TEXT NOT NULL,
+    aa_intelligence_index INTEGER,
+    aa_coding_index       INTEGER,
+    aa_agentic_index      INTEGER
 );
 CREATE TABLE IF NOT EXISTS endpoints (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,9 +35,9 @@ CREATE TABLE IF NOT EXISTS endpoints (
     supports_decisions INTEGER,
     quality_tier      TEXT,
     quality_score     REAL,
-    judged_at         TEXT,
-    judge_model       TEXT,
-    judge_prompt      TEXT,
+    scored_at         TEXT,
+    score_model       TEXT,
+    score_prompt      TEXT,
     price_override_tokens INTEGER,
     FOREIGN KEY (model_id) REFERENCES models(model_id)
 );
@@ -58,10 +63,42 @@ pub const ENDPOINT_INDEXED_COLUMNS: &[(&str, &str)] = &[
     ("supports_decisions", "INTEGER"),
     ("quality_tier", "TEXT"),
     ("quality_score", "REAL"),
-    ("judged_at", "TEXT"),
-    ("judge_model", "TEXT"),
-    ("judge_prompt", "TEXT"),
+    ("scored_at", "TEXT"),
+    ("score_model", "TEXT"),
+    ("score_prompt", "TEXT"),
     ("price_override_tokens", "INTEGER"),
+];
+
+/// Indexed columns on `models` (Iter 31) — mirrors the endpoints
+/// pattern. Migration checks each column's presence, so one list
+/// covers v1..v5 databases alike.
+pub const MODEL_INDEXED_COLUMNS: &[(&str, &str)] = &[
+    ("aa_intelligence_index", "INTEGER"),
+    ("aa_coding_index", "INTEGER"),
+    ("aa_agentic_index", "INTEGER"),
+];
+
+/// Endpoint columns renamed in v7 (Iter 32: judging → scoring), as
+/// (old, new) pairs. Migration renames when the old column exists
+/// so v6 verdicts carry over; databases old enough to have neither
+/// take the plain ADD path from `ENDPOINT_INDEXED_COLUMNS`.
+pub const ENDPOINT_RENAMED_COLUMNS: &[(&str, &str)] = &[
+    ("judged_at", "scored_at"),
+    ("judge_model", "score_model"),
+    ("judge_prompt", "score_prompt"),
+];
+
+/// Scoring meta keys renamed in v7 alongside the columns above.
+/// Migration deletes the legacy keys; current runs rewrite them
+/// under the new names.
+pub const LEGACY_SCORE_META_KEYS: &[&str] = &[
+    "judged_at",
+    "judged_count",
+    "judge_model",
+    "judge_prompt",
+    "judge_backend",
+    "judge_calls",
+    "judge_spend_usd",
 ];
 
 /// Phase 1 layout, kept so the migration test can build a legacy DB.

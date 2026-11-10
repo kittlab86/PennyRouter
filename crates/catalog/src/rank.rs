@@ -290,7 +290,7 @@ pub struct ClassRanking {
 /// One free offering (Iter 11, F11): free only through
 /// `valid_until_unix` (unix seconds, half-open like promo windows);
 /// `None` means free by permanent catalog zeros with no expiry.
-/// Published so the gateway judges eligibility without the promo file —
+/// Published so the gateway scorers eligibility without the promo file —
 /// an expired or missing fact is never a permanent zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FreeOffer {
@@ -488,7 +488,7 @@ fn signals<'a>(
     let trend = trends.get(&ep.model_id, &ep.provider_name);
     // Real tag identity (Iter 11, A03): the same tag the entry build
     // and the gateway inline sort use, so all three agree on ties.
-    let tag = crate::judge::endpoint_tag(payload);
+    let tag = crate::score::endpoint_tag(payload);
     let discount = crate::price::resolve_discount(
         promos,
         &ep.model_id,
@@ -518,7 +518,7 @@ fn signals<'a>(
 fn endpoint_tag_of(ep: &crate::store::EndpointRow) -> Option<String> {
     serde_json::from_str(&ep.payload)
         .ok()
-        .and_then(|v: serde_json::Value| crate::judge::endpoint_tag(&v).map(str::to_string))
+        .and_then(|v: serde_json::Value| crate::score::endpoint_tag(&v).map(str::to_string))
 }
 
 /// Stable partition: preferred providers first, avoided last, relative

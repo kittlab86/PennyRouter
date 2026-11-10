@@ -6,7 +6,7 @@
 //! away from recently rate-limited providers.
 
 use axum::{body::Bytes, http::StatusCode, routing::post, Router};
-use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointJudgment, EndpointRow, ModelRow};
+use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelRow};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -53,9 +53,9 @@ fn build_db(path: &std::path::Path) {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -78,14 +78,14 @@ fn build_db(path: &std::path::Path) {
             )
             .unwrap();
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some(tier.to_string()),
                     quality_score: None,
-                    judged_at: "t".to_string(),
-                    judge_model: None,
-                    judge_prompt: None,
+                    scored_at: "t".to_string(),
+                    score_model: None,
+                    score_prompt: None,
                 },
             )
             .unwrap();
@@ -374,9 +374,9 @@ async fn throttled_providers_are_avoided_and_counted() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -398,17 +398,17 @@ async fn throttled_providers_are_avoided_and_counted() {
                 },
             )
             .unwrap();
-        // Judged `standard`: the `low`-tier quality floor (Iter 14)
-        // needs a judged tier, and this test is about throttling.
+        // Scorerd `standard`: the `low`-tier quality floor (Iter 14)
+        // needs a scored tier, and this test is about throttling.
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some("standard".to_string()),
                     quality_score: None,
-                    judged_at: "t".to_string(),
-                    judge_model: None,
-                    judge_prompt: None,
+                    scored_at: "t".to_string(),
+                    score_model: None,
+                    score_prompt: None,
                 },
             )
             .unwrap();
@@ -635,9 +635,9 @@ async fn free_tier_fails_over_on_throttle() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -738,9 +738,9 @@ async fn free_fallback_serves_each_tier_target() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -763,14 +763,14 @@ async fn free_fallback_serves_each_tier_target() {
             )
             .unwrap();
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some("standard".to_string()),
                     quality_score: None,
-                    judged_at: "t".to_string(),
-                    judge_model: None,
-                    judge_prompt: None,
+                    scored_at: "t".to_string(),
+                    score_model: None,
+                    score_prompt: None,
                 },
             )
             .unwrap();
@@ -844,9 +844,9 @@ async fn free_fallback_serves_paid_after_retry_also_429s() {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -992,9 +992,9 @@ fn build_tools_db(path: &std::path::Path, with_capable: bool) {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -1023,14 +1023,14 @@ fn build_tools_db(path: &std::path::Path, with_capable: bool) {
             )
             .unwrap();
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some("low".to_string()),
                     quality_score: None,
-                    judged_at: "t".to_string(),
-                    judge_model: None,
-                    judge_prompt: None,
+                    scored_at: "t".to_string(),
+                    score_model: None,
+                    score_prompt: None,
                 },
             )
             .unwrap();
@@ -1106,7 +1106,7 @@ async fn decision_free_starved_fails_closed() {
 
 /// Decision fixtures: `m/dfree` holds two zero-cost offerings —
 /// NoDec (never capable) and DecCo (capable when `with_capable`) —
-/// and `m/dpaid` optionally holds a judged paid offering for the
+/// and `m/dpaid` optionally holds a scored paid offering for the
 /// fallback leg.
 fn build_decision_db(path: &std::path::Path, with_capable: bool, with_paid: bool) {
     let _ = std::fs::remove_file(path);
@@ -1147,9 +1147,9 @@ fn build_decision_db(path: &std::path::Path, with_capable: bool, with_paid: bool
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -1179,14 +1179,14 @@ fn build_decision_db(path: &std::path::Path, with_capable: bool, with_paid: bool
             .unwrap();
         if let Some(tier) = tier {
             catalog
-                .update_endpoint_judgment(
+                .update_endpoint_score(
                     id,
-                    &EndpointJudgment {
+                    &EndpointScore {
                         quality_tier: Some(tier.to_string()),
                         quality_score: None,
-                        judged_at: "t".to_string(),
-                        judge_model: None,
-                        judge_prompt: None,
+                        scored_at: "t".to_string(),
+                        score_model: None,
+                        score_prompt: None,
                     },
                 )
                 .unwrap();
@@ -1232,9 +1232,9 @@ fn build_threshold_db(path: &std::path::Path, cap_flat_too: bool) {
                 supports_decisions: None,
                 quality_tier: None,
                 quality_score: None,
-                judged_at: None,
-                judge_model: None,
-                judge_prompt: None,
+                scored_at: None,
+                score_model: None,
+                score_prompt: None,
                 price_override_tokens: None,
             })
             .unwrap();
@@ -1263,14 +1263,14 @@ fn build_threshold_db(path: &std::path::Path, cap_flat_too: bool) {
             )
             .unwrap();
         catalog
-            .update_endpoint_judgment(
+            .update_endpoint_score(
                 id,
-                &EndpointJudgment {
+                &EndpointScore {
                     quality_tier: Some("low".to_string()),
                     quality_score: None,
-                    judged_at: "t".to_string(),
-                    judge_model: None,
-                    judge_prompt: None,
+                    scored_at: "t".to_string(),
+                    score_model: None,
+                    score_prompt: None,
                 },
             )
             .unwrap();

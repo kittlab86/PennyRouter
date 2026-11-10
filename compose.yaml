@@ -45,11 +45,11 @@ services:
       - .env.dev
     environment:
       # Secrets only (generic config arrives via env_file above):
-      # judge backends + popularity-pins Data API key.
+      # score backends + popularity-pins Data API key.
       BASETEN_API_KEY: ${BASETEN_API_KEY:-}
       MODAL_KEY_ID: ${MODAL_KEY_ID:-}
       MODAL_KEY_SECRET: ${MODAL_KEY_SECRET:-}
-      MODAL_JUDGE_URL: ${MODAL_JUDGE_URL:-}
+      MODAL_SCORE_URL: ${MODAL_SCORE_URL:-}
       RANKINGS_API_KEY: ${RANKINGS_API_KEY:-}
     restart: unless-stopped
   # Opt-in catalog browser (Iter 17): only starts with

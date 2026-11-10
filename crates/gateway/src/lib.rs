@@ -480,7 +480,7 @@ impl AppState {
         // Provider-pinned upstreams (Iter 16): unset means the
         // provider's routes fail closed with provider_not_configured.
         // Baseten defaults to its public inference host (same host the
-        // catalog judge uses, without the judge's `/v1` route prefix —
+        // catalog score uses, without the score's `/v1` route prefix —
         // the gateway appends the incoming `/v1/…` path itself; an
         // explicitly configured trailing `/v1` is stripped at
         // registration). Modal has no shared deployment, so it stays
@@ -909,7 +909,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
             Some(router) => {
                 let summary = router.ui_summary();
                 let models = summary.models.len();
-                let offerings: usize = summary.models.iter().map(|(_, o)| o.len()).sum();
+                let offerings: usize = summary.models.iter().map(|(_, _, o)| o.len()).sum();
                 page.push_str(&format!(
                 "<p>Snapshot: <strong>{}</strong> — {models} models, {offerings} offerings.</p>",
                 summary
@@ -957,8 +957,11 @@ async fn ui_page(State(state): State<AppState>) -> Response {
                 }
                 {
                     let page = &mut models_panel;
-                    for (model_id, entries) in &summary.models {
-                        page.push_str(&format!("<h3>{}</h3>", esc(model_id)));
+                    for (model_id, coding, entries) in &summary.models {
+                        let coding = coding
+                            .map(|n| format!(" · coding {n}"))
+                            .unwrap_or_default();
+                        page.push_str(&format!("<h3>{}{}</h3>", esc(model_id), coding));
                         page.push_str(
                             "<table><tr><th>provider</th><th>tag</th>\
                     <th>prompt $/M</th><th>completion $/M</th><th>class</th>\
