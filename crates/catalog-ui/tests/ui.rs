@@ -98,7 +98,7 @@ fn artifact_dir(test: &str) -> std::path::PathBuf {
                 price_completion: Some(1.25e-7),
                 price_cache_read: None,
                 price_cache_write: None,
-                precision_class: Some("fp16".to_string()),
+                precision_class: Some("unknown".to_string()),
                 promo_discount: None,
                 processed_at: "t".to_string(),
                 supports_tools: None,
@@ -362,5 +362,9 @@ fn model_link_round_trips_special_chars_and_prices_render() {
     assert!(
         filtered.contains("0.1250"),
         "normal prices keep fixed precision, got: {filtered}"
+    );
+    assert!(
+        !filtered.contains(">unknown<"),
+        "stored class unknown renders as -, got: {filtered}"
     );
 }

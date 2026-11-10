@@ -866,10 +866,18 @@ async fn ui_page(State(state): State<AppState>) -> Response {
     /// Display unit is $/M tokens (×1e6): fixed 4 decimals down to
     /// $0.0001/M, then scientific — a tiny nonzero price must never
     /// print as `0.0000` (looks free).
+    /// Class display: unclassified ("unknown") renders as `-`, like missing.
+    fn class(value: &Option<String>) -> String {
+        match value.as_deref() {
+            None | Some("unknown") => "-".to_string(),
+            Some(v) => esc(v),
+        }
+    }
+
     fn money(value: Option<f64>) -> String {
         match value {
             None => "-".to_string(),
-            Some(v) if v == 0.0 => "0".to_string(),
+            Some(0.0) => "0".to_string(),
             Some(v) => {
                 let m = v * 1_000_000.0;
                 if m.abs() >= 0.0001 {
@@ -964,7 +972,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
                                 text(&entry.tag),
                                 money(entry.price_prompt),
                                 money(entry.price_completion),
-                                text(&entry.precision_class),
+                                class(&entry.precision_class),
                                 text(&entry.quality_tier),
                                 entry
                                     .quality_score
@@ -1088,7 +1096,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
                         c.promo_discount
                             .map(|d| format!("{d:.2}"))
                             .unwrap_or_else(|| "-".to_string()),
-                        text(&c.precision_class),
+                        class(&c.precision_class),
                         text(&c.quality_tier),
                         c.quality_score
                             .map(|s| format!("{s:.3}"))
@@ -1136,7 +1144,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         +(c.tag?insEsc(c.tag):'-')+'</td><td>'+insMoney(c.price_prompt)+'</td><td>'+insMoney(c.price_completion)\
         +'</td><td>'+insMoney(c.price_cache_read)+'</td><td>'+insMoney(c.price_cache_write)+'</td><td>'\
         +insMoney(c.effective_cost)+'</td><td>'+((c.promo_discount===null||c.promo_discount===undefined)?'-':Number(c.promo_discount).toFixed(2))\
-        +'</td><td>'+(c.precision_class?insEsc(c.precision_class):'-')+'</td><td>'\
+        +'</td><td>'+(c.precision_class&&c.precision_class!=='unknown'?insEsc(c.precision_class):'-')+'</td><td>'\
         +(c.quality_tier?insEsc(c.quality_tier):'-')+'</td><td>'\
         +((c.quality_score===null||c.quality_score===undefined)?'-':Number(c.quality_score).toFixed(3))\
         +'</td><td>'+insBool(c.supports_tools)+'</td><td>'+insBool(c.supports_decisions)+'</td><td>'\
@@ -1184,7 +1192,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         +(c.tag?insEsc(c.tag):'-')+'</td><td>'+insMoney(c.price_prompt)+'</td><td>'+insMoney(c.price_completion)\
         +'</td><td>'+insMoney(c.price_cache_read)+'</td><td>'+insMoney(c.price_cache_write)+'</td><td>'\
         +insMoney(c.effective_cost)+'</td><td>'+((c.promo_discount===null||c.promo_discount===undefined)?'-':Number(c.promo_discount).toFixed(2))\
-        +'</td><td>'+(c.precision_class?insEsc(c.precision_class):'-')+'</td><td>'\
+        +'</td><td>'+(c.precision_class&&c.precision_class!=='unknown'?insEsc(c.precision_class):'-')+'</td><td>'\
         +(c.quality_tier?insEsc(c.quality_tier):'-')+'</td><td>'\
         +((c.quality_score===null||c.quality_score===undefined)?'-':Number(c.quality_score).toFixed(3))\
         +'</td><td>'+insBool(c.supports_tools)+'</td><td>'+insBool(c.supports_decisions)+'</td><td>'\

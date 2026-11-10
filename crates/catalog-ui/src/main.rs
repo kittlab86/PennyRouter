@@ -262,7 +262,11 @@ async fn endpoints(
                     ep.price_completion
                         .map(fmt_price)
                         .unwrap_or_else(|| "-".to_string()),
-                    esc(ep.precision_class.as_deref().unwrap_or("-")),
+                    ep.precision_class
+                        .as_deref()
+                        .filter(|c| *c != "unknown")
+                        .map(esc)
+                        .unwrap_or_else(|| "-".to_string()),
                     esc(ep.quality_tier.as_deref().unwrap_or("-")),
                     ep.quality_score
                         .map(|v| format!("{v:.3}"))

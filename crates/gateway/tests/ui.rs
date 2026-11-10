@@ -567,12 +567,35 @@ fn preview_db_inner(test: &str, cheap_price: f64, _tag: &str) -> std::path::Path
 }
 
 /// Display unit is $/M tokens: the priced preview_db fixture (1.0,
-/// 2.0, 3.0 $/tok) renders ×1e6 in the /ui models table.
+/// 2.0, 3.0 $/tok) renders ×1e6 in the /ui models table; stored class
+/// "unknown" renders as `-`, like missing.
 #[tokio::test]
 async fn ui_prices_render_per_million_tokens() {
     let _guard = lock_env().await;
     std::env::set_var("GATEWAY_UI", "1");
     let db = preview_db("money", 1.0);
+    {
+        let catalog = Catalog::open(&db).unwrap();
+        let eps = catalog.endpoints_for("m/code").unwrap();
+        let cheap = eps.iter().find(|e| e.provider_name == "Cheap").unwrap();
+        catalog
+            .update_endpoint_index(
+                cheap.id,
+                &EndpointIndex {
+                    price_prompt: cheap.price_prompt,
+                    price_completion: cheap.price_completion,
+                    price_cache_read: cheap.price_cache_read,
+                    price_cache_write: cheap.price_cache_write,
+                    precision_class: Some("unknown".to_string()),
+                    promo_discount: cheap.promo_discount,
+                    processed_at: cheap.processed_at.clone().unwrap_or_else(|| "t".to_string()),
+                    supports_tools: cheap.supports_tools,
+                    supports_decisions: cheap.supports_decisions,
+                    price_override_tokens: cheap.price_override_tokens,
+                },
+            )
+            .unwrap();
+    }
     let router = Arc::new(pennyrouter_gateway::routing::Router::load(&db).expect("router loads"));
     let state =
         pennyrouter_gateway::AppState::new("http://127.0.0.1:9".to_string()).with_router(router);
@@ -600,6 +623,11 @@ async fn ui_prices_render_per_million_tokens() {
             "fixture {raw} $/tok renders as {shown} $/M"
         );
     }
+    assert!(body.contains("Cheap"), "unknown-class row still listed");
+    assert!(
+        !body.contains(">unknown<"),
+        "stored class unknown renders as -, not unknown"
+    );
 }
 
 #[test]
