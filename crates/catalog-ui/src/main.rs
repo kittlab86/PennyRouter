@@ -50,15 +50,19 @@ fn url_encode(text: &str) -> String {
     out
 }
 
-/// Adaptive price rendering: fixed 7 decimals down to 1e-7, then
-/// scientific — `4.4e-8` must never print as `0.0000000` (looks free).
+/// Price rendering in $/M tokens (×1e6): fixed 4 decimals down to
+/// $0.0001/M, then scientific — a tiny nonzero price must never
+/// print as `0.0000` (looks free).
 fn fmt_price(value: f64) -> String {
     if value == 0.0 {
         "0".to_string()
-    } else if value.abs() >= 1e-7 {
-        format!("{value:.7}")
     } else {
-        format!("{value:.2e}")
+        let m = value * 1_000_000.0;
+        if m.abs() >= 0.0001 {
+            format!("{m:.4}")
+        } else {
+            format!("{m:.2e}")
+        }
     }
 }
 
@@ -230,7 +234,7 @@ async fn endpoints(
         Ok(endpoints) => {
             body.push_str(
                 "<table><tr><th>model</th><th>provider</th><th>tag</th>\
-                <th>prompt $/tok</th><th>completion $/tok</th><th>class</th>\
+                <th>prompt $/M</th><th>completion $/M</th><th>class</th>\
                 <th>tier</th><th>score</th><th>judged by</th></tr>",
             );
             for ep in &endpoints {
@@ -465,5 +469,21 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prices_render_per_million_tokens() {
+        assert_eq!(fmt_price(0.0), "0");
+        assert_eq!(fmt_price(1e-6), "1.0000");
+        assert_eq!(fmt_price(2.5e-6), "2.5000");
+        assert_eq!(fmt_price(1.0), "1000000.0000");
+        // Floor: fixed down to $0.0001/M, then scientific.
+        assert_eq!(fmt_price(2e-10), "0.0002");
+        assert_eq!(fmt_price(1e-11), "1.00e-5");
     }
 }

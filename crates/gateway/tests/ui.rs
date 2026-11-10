@@ -144,6 +144,9 @@ async fn ui_enabled_shows_ranking_and_metrics() {
     assert!(body.contains("openrouter/pair/low"), "menu listed");
     assert!(body.contains("Metrics"), "metrics section present");
     assert!(body.contains("pennyrouter_"), "metrics text embedded");
+    // Price columns are labeled per million tokens, never per token.
+    assert!(body.contains("$/M"), "prices labeled $/M");
+    assert!(!body.contains("$/tok"), "no per-token prices shown");
     // Tabbed shell: one tab bar, five panels, every placeholder filled.
     assert!(body.contains("role=\"tablist\""), "tab bar present");
     for panel in ["overview", "models", "inspector", "classifier", "metrics"] {
@@ -561,6 +564,40 @@ fn preview_db_inner(test: &str, cheap_price: f64, _tag: &str) -> std::path::Path
     );
     drop(catalog);
     path
+}
+
+/// Display unit is $/M tokens: the priced preview_db fixture (1.0,
+/// 2.0, 3.0 $/tok) renders ×1e6 in the /ui models table.
+#[tokio::test]
+async fn ui_prices_render_per_million_tokens() {
+    let _guard = lock_env().await;
+    std::env::set_var("GATEWAY_UI", "1");
+    let db = preview_db("money", 1.0);
+    let router =
+        Arc::new(pennyrouter_gateway::routing::Router::load(&db).expect("router loads"));
+    let state = pennyrouter_gateway::AppState::new("http://127.0.0.1:9".to_string())
+        .with_router(router);
+    let app = pennyrouter_gateway::app_with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gw = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    std::env::remove_var("GATEWAY_UI");
+
+    let body = client()
+        .get(format!("http://{gw}/ui"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for (raw, shown) in [("1.0", "1000000.0000"), ("2.0", "2000000.0000"), ("3.0", "3000000.0000")]
+    {
+        assert!(
+            body.contains(shown),
+            "fixture {raw} $/tok renders as {shown} $/M"
+        );
+    }
 }
 
 #[test]

@@ -863,10 +863,22 @@ async fn ui_page(State(state): State<AppState>) -> Response {
             .replace('>', "&gt;")
             .replace('"', "&quot;")
     }
+    /// Display unit is $/M tokens (×1e6): fixed 4 decimals down to
+    /// $0.0001/M, then scientific — a tiny nonzero price must never
+    /// print as `0.0000` (looks free).
     fn money(value: Option<f64>) -> String {
-        value
-            .map(|v| format!("{v:.7}"))
-            .unwrap_or_else(|| "-".to_string())
+        match value {
+            None => "-".to_string(),
+            Some(v) if v == 0.0 => "0".to_string(),
+            Some(v) => {
+                let m = v * 1_000_000.0;
+                if m.abs() >= 0.0001 {
+                    format!("{m:.4}")
+                } else {
+                    format!("{m:.2e}")
+                }
+            }
+        }
     }
     fn text(value: &Option<String>) -> String {
         value.as_deref().map(esc).unwrap_or_else(|| "-".to_string())
@@ -941,7 +953,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
                         page.push_str(&format!("<h3>{}</h3>", esc(model_id)));
                         page.push_str(
                             "<table><tr><th>provider</th><th>tag</th>\
-                    <th>prompt $/tok</th><th>completion $/tok</th><th>class</th>\
+                    <th>prompt $/M</th><th>completion $/M</th><th>class</th>\
                     <th>tier</th><th>score</th></tr>",
                         );
                         for entry in entries {
@@ -1052,8 +1064,8 @@ async fn ui_page(State(state): State<AppState>) -> Response {
                 }
                 page.push_str(
                 "<table><thead><tr><th>#</th><th>provider</th><th>backend model</th><th>tag</th>\
-                <th>prompt $/tok</th><th>completion $/tok</th><th>cache-read $/tok</th>\
-                <th>cache-write $/tok</th><th>effective</th><th>promo</th><th>class</th>\
+                <th>prompt $/M</th><th>completion $/M</th><th>cache-read $/M</th>\
+                <th>cache-write $/M</th><th>effective $/M</th><th>promo</th><th>class</th>\
                 <th>tier</th><th>score</th><th>tools</th><th>decisions</th>\
                 <th>free</th><th>availability</th><th>rank</th></tr></thead>",
             );
@@ -1112,7 +1124,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         "<script>\
         function insEsc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')\
         .replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}\
-        function insMoney(v){return (v===null||v===undefined)?'-':Number(v).toFixed(7);}\
+        function insMoney(v){if(v===null||v===undefined)return '-';var m=Number(v)*1e6;if(m===0)return '0';return Math.abs(m)>=0.0001?m.toFixed(4):m.toExponential(2);}\
         function insBool(v){return (v===null||v===undefined)?'-':(v?'yes':'no');}\
         async function insFetch(model,top){\
         var key=document.getElementById('inspector-key').value;\
@@ -1133,8 +1145,8 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         +(c.sticky_match?'pinned':'-')+'</td></tr>';}\
         function insTable(data){\
         var h='<table><thead><tr><th>#</th><th>provider</th><th>backend model</th><th>tag</th>'\
-        +'<th>prompt $/tok</th><th>completion $/tok</th><th>cache-read $/tok</th><th>cache-write $/tok</th>'\
-        +'<th>effective</th><th>promo</th><th>class</th><th>tier</th><th>score</th><th>tools</th>'\
+        +'<th>prompt $/M</th><th>completion $/M</th><th>cache-read $/M</th><th>cache-write $/M</th>'\
+        +'<th>effective $/M</th><th>promo</th><th>class</th><th>tier</th><th>score</th><th>tools</th>'\
         +'<th>decisions</th><th>free</th><th>availability</th><th>rank</th><th>session</th></tr></thead><tbody>';\
         for(var i=0;i<data.candidates.length;i++){h+=insRow(data.candidates[i],i);}\
         return h+'</tbody></table>';}\

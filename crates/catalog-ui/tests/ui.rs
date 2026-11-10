@@ -344,15 +344,23 @@ fn model_link_round_trips_special_chars_and_prices_render() {
         "filter hides other models, got: {filtered}"
     );
     assert!(
-        filtered.contains("4.40e-8"),
-        "tiny price renders non-zero, got: {filtered}"
+        filtered.contains("$/M"),
+        "prices labeled per million, got: {filtered}"
     );
     assert!(
-        !filtered.contains("0.0000000"),
+        !filtered.contains("$/tok"),
+        "no per-token prices shown, got: {filtered}"
+    );
+    assert!(
+        filtered.contains("0.0440"),
+        "tiny price renders non-zero $/M, got: {filtered}"
+    );
+    assert!(
+        !filtered.contains("0.0000"),
         "tiny price never looks free, got: {filtered}"
     );
     assert!(
-        filtered.contains("0.0000001"),
+        filtered.contains("0.1250"),
         "normal prices keep fixed precision, got: {filtered}"
     );
 }
