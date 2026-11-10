@@ -75,8 +75,8 @@ environment, so nothing needs duplicating into the compose file.
 [`scripts/deploy-webhook.sh`](../scripts/deploy-webhook.sh)
 (`make deploy-webhook`) POSTs a JSON payload to a configured
 endpoint to force a redeploy without pushing, e.g.
-`DEPLOY_URL=http://<host>:3000/api/stacks/<id>/sync` with
-`DEPLOY_PAYLOAD='{"pull":true,"forceRecreate":true}'`
+`DEPLOY_URL=http://<host>:3000/api/git/stacks/<id>/deploy-stream`
+with `DEPLOY_PAYLOAD='{"pull":true,"forceRecreate":true}'`
 (`DEPLOY_API_TOKEN` adds a bearer token when set, omitted when
 empty). Either deploy method per host, never both — both stacks
 use the same container names.

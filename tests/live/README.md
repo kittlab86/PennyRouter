@@ -16,6 +16,7 @@ tests/live/
     router-smoke.sh          # /health, /v1/models, /ui, optional chat probe
     check-provider-config.sh # compose + deploy.sh carry provider config
     agent-logs.sh            # router / hermes / openclaw logs over ssh
+    validate-keys.sh         # provider keys (repo-root .env) vs free auth checks
 ```
 
 ## Quickstart

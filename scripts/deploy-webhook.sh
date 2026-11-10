@@ -10,7 +10,8 @@
 # file — see `.env.deploy.sample` — which loads automatically when
 # present; explicit environment wins over file values):
 #   DEPLOY_URL        Full endpoint URL, e.g.
-#                     http://<host>:3000/api/stacks/<id>/sync (required).
+#                     http://<host>:3000/api/git/stacks/<id>/deploy-stream
+#                     (required).
 #   DEPLOY_API_TOKEN  Optional bearer token. Empty/unset = no
 #                     Authorization header is sent.
 #   DEPLOY_PAYLOAD    JSON request body. Default: '{}'.
@@ -19,7 +20,7 @@
 #                     redacted) without calling anything.
 #
 # Usage:
-#   DEPLOY_URL=http://<host>:3000/api/stacks/<id>/sync \
+#   DEPLOY_URL=http://<host>:3000/api/git/stacks/<id>/deploy-stream \
 #     DEPLOY_PAYLOAD='{"pull":true,"forceRecreate":true}' \
 #     ./scripts/deploy-webhook.sh
 set -euo pipefail
