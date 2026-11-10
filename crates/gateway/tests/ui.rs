@@ -573,10 +573,9 @@ async fn ui_prices_render_per_million_tokens() {
     let _guard = lock_env().await;
     std::env::set_var("GATEWAY_UI", "1");
     let db = preview_db("money", 1.0);
-    let router =
-        Arc::new(pennyrouter_gateway::routing::Router::load(&db).expect("router loads"));
-    let state = pennyrouter_gateway::AppState::new("http://127.0.0.1:9".to_string())
-        .with_router(router);
+    let router = Arc::new(pennyrouter_gateway::routing::Router::load(&db).expect("router loads"));
+    let state =
+        pennyrouter_gateway::AppState::new("http://127.0.0.1:9".to_string()).with_router(router);
     let app = pennyrouter_gateway::app_with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let gw = listener.local_addr().unwrap();
@@ -591,8 +590,11 @@ async fn ui_prices_render_per_million_tokens() {
         .text()
         .await
         .unwrap();
-    for (raw, shown) in [("1.0", "1000000.0000"), ("2.0", "2000000.0000"), ("3.0", "3000000.0000")]
-    {
+    for (raw, shown) in [
+        ("1.0", "1000000.0000"),
+        ("2.0", "2000000.0000"),
+        ("3.0", "3000000.0000"),
+    ] {
         assert!(
             body.contains(shown),
             "fixture {raw} $/tok renders as {shown} $/M"

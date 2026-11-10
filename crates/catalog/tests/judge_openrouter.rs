@@ -93,10 +93,7 @@ fn live_round_trip_posts_chat_request_and_reads_judgment() {
     assert_eq!(out.quality_score, Some(0.9));
     let identity = judge.identity();
     assert_eq!(identity.model, "test-model");
-    assert_eq!(
-        identity.prompt_version,
-        pennyrouter_catalog::PROMPT_VERSION
-    );
+    assert_eq!(identity.prompt_version, pennyrouter_catalog::PROMPT_VERSION);
 
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 1);
@@ -214,8 +211,5 @@ fn from_env_fails_closed_without_model_or_key() {
 
 #[test]
 fn production_base_url_targets_openrouter_chat() {
-    assert_eq!(
-        OpenRouterJudge::BASE_URL,
-        "https://openrouter.ai/api/v1"
-    );
+    assert_eq!(OpenRouterJudge::BASE_URL, "https://openrouter.ai/api/v1");
 }

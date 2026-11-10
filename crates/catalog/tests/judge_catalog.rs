@@ -45,10 +45,7 @@ fn shipped_catalog_loads_and_resolves_known_backends() {
     let openrouter = catalog.resolve("openrouter").unwrap();
     assert_eq!(openrouter.base_url, OpenRouterJudge::BASE_URL);
     assert_eq!(openrouter.prompt_version, PROMPT_VERSION);
-    assert_eq!(
-        openrouter.auth_env,
-        vec!["RANKINGS_API_KEY".to_string()]
-    );
+    assert_eq!(openrouter.auth_env, ["RANKINGS_API_KEY".to_string()]);
 }
 
 #[test]
