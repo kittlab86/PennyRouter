@@ -1,4 +1,4 @@
-//! Shared core for OpenAI-compatible live judges (Baseten, Modal).
+//! Shared core for OpenAI-compatible live judges (Baseten, Modal, OpenRouter).
 //!
 //! Backends differ only in base URL, model, and auth headers; the prompt,
 //! request shape, and reply validation are identical.
@@ -31,7 +31,8 @@ pub fn chat_body(model: &str, model_id: &str, provider_name: &str, payload: &Val
 }
 
 /// Extract and validate the judgment from a chat completion reply.
-/// `source` names the backend for error messages ("baseten", "modal").
+/// `source` names the backend for error messages ("baseten", "modal",
+/// "openrouter").
 pub fn judgment_from_reply(source: &str, reply: &Value) -> Result<Judgment, Error> {
     let content = reply
         .pointer("/choices/0/message/content")

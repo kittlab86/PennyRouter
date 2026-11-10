@@ -2,8 +2,9 @@
 //!
 //! Deterministic extraction (Phase 2a), then model-judged signals from a
 //! recorded-output file when `--judge` is passed (Phase 2b, no live model
-//! calls) or from a live backend with `--judge-backend baseten|modal`
-//! (Phase 4, keys from the environment). `--judges <file>` selects the
+//! calls) or from a live backend with `--judge-backend
+//! baseten|modal|openrouter` (Phase 4, keys from the environment).
+//! `--judges <file>` selects the
 //! backend and its policy from a decision-model catalog instead of the
 //! built-ins (Iter 15): recorded stays the default, live runs are
 //! sampled and capped. Migrates older DBs on open.
@@ -13,7 +14,7 @@
 use pennyrouter_catalog::{
     build_judge, now_rfc3339, plan_live_calls, run_judging, run_judging_selected, run_processing,
     select_endpoints, spend_line, BasetenJudge, Catalog, JudgeCatalog, JudgeEntry, ModalJudge,
-    RecordedJudge,
+    OpenRouterJudge, RecordedJudge,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -153,9 +154,13 @@ fn run() -> Result<(), String> {
                 backend.clone(),
                 Box::new(ModalJudge::from_env().map_err(|e| e.to_string())?),
             )),
+            (Some(backend), None) if backend == "openrouter" => Some((
+                backend.clone(),
+                Box::new(OpenRouterJudge::from_env().map_err(|e| e.to_string())?),
+            )),
             (Some(backend), None) => {
                 return Err(format!(
-                    "unknown --judge-backend: {backend} (supported: baseten, modal)"
+                    "unknown --judge-backend: {backend} (supported: baseten, modal, openrouter)"
                 ));
             }
         };

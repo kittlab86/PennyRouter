@@ -202,3 +202,9 @@ cheap judge model, classifier-based routing.
       never logged/stored; previews never pin. Test: `tests/ui.rs`
       preview suite (ordering, sticky/fresh, no-pin, throttle,
       disabled gate, page content).
+- [x] **Iter 30 — OpenRouter catalog judge.** `--judge-backend
+      openrouter` judges through an operator-picked OpenRouter
+      model (`OPENROUTER_JUDGE_MODEL`, fail-closed) on the shared
+      OpenAI-chat core, keyed by the shared `RANKINGS_API_KEY`;
+      cataloged like the other live backends. Test: stub-server
+      round trip + fail-closed matrix + catalog + CLI dispatch.

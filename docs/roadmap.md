@@ -615,8 +615,29 @@ Development delivers Docker images, platform delivers deployments.
   disabled falls through, page content). `cargo test`, clippy, fmt
   clean.
 
-## After Iter 29
+## Iter 30 — OpenRouter catalog judge (done)
+
+- Goal: judge catalog endpoints through an OpenRouter-hosted model,
+  like the Baseten/Modal legs — operator-picked model, shared key.
+- Value: judging no longer depends on Baseten/Modal accounts; any
+  OpenRouter chat model can classify offerings into quality tiers,
+  still offline batch with sampling, caps, and audit trail.
+- Shipped: `OpenRouterJudge` on the shared OpenAI-chat core
+  (`https://openrouter.ai/api/v1`, Bearer auth, same prompt v1 +
+  reply validation); model from `OPENROUTER_JUDGE_MODEL`
+  (fail-closed, nothing pinned), key from the shared
+  `RANKINGS_API_KEY`; `--judge-backend openrouter` in
+  catalog-process plus an `openrouter` judges-catalog entry
+  (`auth_env` names the shared key).
+- Test: `crates/catalog/tests/judge_openrouter.rs` (stub round trip:
+  POST path, Bearer header, body model/temperature/json_object/2
+  messages; invalid outputs error naming the backend; from_env
+  fail-closed matrix; base URL const) + catalog tests (fixture
+  entry resolves, stub-backed verdict, `build_judge` from entry) +
+  CLI zero-sample dispatch. `cargo test`, clippy, fmt clean.
+
+## After Iter 30
 
 Deferred ideas in [future.md](future.md): exact price prediction,
-parallel fan-out, more judge models. Each becomes roadmap items only
-when pulled forward deliberately.
+parallel fan-out, further judge backends. Each becomes roadmap items
+only when pulled forward deliberately.

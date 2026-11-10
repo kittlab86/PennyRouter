@@ -13,7 +13,7 @@ use common::{fixtures_dir, synced_db};
 use pennyrouter_catalog::{
     build_judge, plan_live_calls, run_judging, run_judging_selected, run_processing,
     select_endpoints, spend_line, BasetenJudge, Catalog, EndpointRow, Judge, JudgeCatalog,
-    JudgePolicy, ModalJudge, PROMPT_VERSION,
+    JudgePolicy, ModalJudge, OpenRouterJudge, PROMPT_VERSION,
 };
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -29,7 +29,7 @@ fn catalog() -> JudgeCatalog {
 #[test]
 fn shipped_catalog_loads_and_resolves_known_backends() {
     let catalog = catalog();
-    assert_eq!(catalog.judges.len(), 3);
+    assert_eq!(catalog.judges.len(), 4);
     let baseten = catalog.resolve("baseten").unwrap();
     assert_eq!(baseten.model, BasetenJudge::MODEL);
     assert_eq!(baseten.prompt_version, PROMPT_VERSION);
@@ -42,6 +42,13 @@ fn shipped_catalog_loads_and_resolves_known_backends() {
     );
     let recorded = catalog.resolve("recorded").unwrap();
     assert!(recorded.recording.is_some());
+    let openrouter = catalog.resolve("openrouter").unwrap();
+    assert_eq!(openrouter.base_url, OpenRouterJudge::BASE_URL);
+    assert_eq!(openrouter.prompt_version, PROMPT_VERSION);
+    assert_eq!(
+        openrouter.auth_env,
+        vec!["RANKINGS_API_KEY".to_string()]
+    );
 }
 
 #[test]
@@ -183,6 +190,41 @@ fn cataloged_modal_judge_reproduces_its_fixture() {
     assert_eq!(requests.len(), 1);
     let body: Value = serde_json::from_str(requests[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(body["model"], json!(entry.model));
+}
+
+#[test]
+fn cataloged_openrouter_judge_reproduces_its_fixture() {
+    let catalog = catalog();
+    let entry = catalog.resolve("openrouter").unwrap();
+    let (base_url, server) = stub_server(vec![chat_response(
+        r#"{"quality_tier": "high", "quality_score": 0.85}"#,
+    )]);
+    let judge = OpenRouterJudge::new(&base_url, "test-key", &entry.model).unwrap();
+    let out = judge.judge("m", "p", &json!({})).unwrap();
+    assert_eq!(out.quality_tier.as_deref(), Some("high"));
+    assert_eq!(out.quality_score, Some(0.85));
+    let identity = judge.identity();
+    assert_eq!(identity.model, entry.model);
+    assert_eq!(identity.prompt_version, PROMPT_VERSION);
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert!(request.contains("\r\nauthorization: Bearer test-key\r\n"));
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["model"], json!(entry.model));
+}
+
+#[test]
+fn build_judge_builds_openrouter_from_its_entry() {
+    let catalog = catalog();
+    let entry = catalog.resolve("openrouter").unwrap();
+    std::env::set_var("RANKINGS_API_KEY", "probe-dummy");
+    let judge = build_judge(entry).unwrap();
+    std::env::remove_var("RANKINGS_API_KEY");
+    let identity = judge.identity();
+    assert_eq!(identity.model, entry.model);
+    assert_eq!(identity.prompt_version, PROMPT_VERSION);
 }
 
 #[test]

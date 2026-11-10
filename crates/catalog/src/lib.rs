@@ -11,6 +11,7 @@ mod judge_baseten;
 mod judge_catalog;
 mod judge_modal;
 mod judge_openai;
+mod judge_openrouter;
 mod popular;
 mod price;
 mod process;
@@ -32,6 +33,7 @@ pub use judge_catalog::{
 };
 pub use judge_modal::ModalJudge;
 pub use judge_openai::PROMPT_VERSION;
+pub use judge_openrouter::OpenRouterJudge;
 pub use popular::{
     aggregate_apps, aggregate_models, fetch_popularity, read_popularity, store_popularity,
     Popularity, POPULAR_APPS_TOP_N, POPULAR_MODELS_TOP_N, RANKINGS_WINDOW_DAYS,

@@ -26,13 +26,13 @@
 
 use crate::judge::RecordedJudge;
 use crate::store::EndpointRow;
-use crate::{BasetenJudge, Error, ModalJudge};
+use crate::{BasetenJudge, Error, ModalJudge, OpenRouterJudge};
 use serde_json::Value;
 use std::path::Path;
 
 /// Backends the gateway knows how to construct. Anything else in a
 /// judges file is rejected at load, never mid-rebuild.
-pub const KNOWN_BACKENDS: &[&str] = &["recorded", "baseten", "modal"];
+pub const KNOWN_BACKENDS: &[&str] = &["recorded", "baseten", "modal", "openrouter"];
 
 /// One cataloged judge: how to build it and what it costs.
 #[derive(Debug, Clone)]
@@ -490,6 +490,14 @@ pub fn build_judge(entry: &JudgeEntry) -> Result<Box<dyn crate::judge::Judge>, E
                 &base_url,
                 &vars[0],
                 &vars[1],
+                &entry.model,
+            )?))
+        }
+        "openrouter" => {
+            let vars = read_auth(entry, 1)?;
+            Ok(Box::new(OpenRouterJudge::new(
+                &entry.base_url,
+                &vars[0],
                 &entry.model,
             )?))
         }

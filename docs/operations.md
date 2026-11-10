@@ -146,9 +146,12 @@ Catalog pipeline: `CATALOG_IMAGE` (sync image tag), `SYNC_INTERVAL`
 (seconds between sync cycles, 0 = run once), `FETCH_OPENROUTER`
 (1 = live fetch, 0 = baked fixtures), `EXTRA_MODEL_IDS`
 (comma-separated ids fetched individually), `RANKINGS_API_KEY` (menu
-popularity pins via the Data API; unset = published without pins),
-judge keys (`BASETEN_API_KEY`, `MODAL_KEY_ID`/`MODAL_KEY_SECRET`,
-`MODAL_JUDGE_URL`; unset = recorded-fixture judging), `CATALOG_UI`
+popularity pins via the Data API, plus the OpenRouter judge leg;
+unset = published without pins), `OPENROUTER_JUDGE_MODEL` (judge
+model for `--judge-backend openrouter`; unset = that backend fails
+closed), judge keys (`BASETEN_API_KEY`,
+`MODAL_KEY_ID`/`MODAL_KEY_SECRET`, `MODAL_JUDGE_URL`; unset =
+recorded-fixture judging), `CATALOG_UI`
 (`1` lets the catalog-ui browser start). Gateway menu lists:
 `MODAL_MODELS` / `BASETEN_MODELS` (comma-separated, 1–3 ids each,
 advertised only when the provider base is configured). Popularity
@@ -175,19 +178,21 @@ explicit `baseURL` above.
 No local key store:
 backend keys travel with requests, never in config or fixtures. The
 one exception is catalog judging (Phase 4): the offline
-`catalog-process --judge-backend baseten|modal` reads judge keys from
-the environment (`BASETEN_API_KEY`, `MODAL_JUDGE_URL`, `MODAL_KEY_ID`,
-`MODAL_KEY_SECRET` — see [`.env.example`](../.env.example)). The
-gateway never reads them; without them judging stays on recorded
-fixtures. Never commit real values.
+`catalog-process --judge-backend baseten|modal|openrouter` reads judge
+keys from the environment (`BASETEN_API_KEY`, `MODAL_JUDGE_URL`, `MODAL_KEY_ID`,
+`MODAL_KEY_SECRET`, shared `RANKINGS_API_KEY` for the OpenRouter leg,
+`OPENROUTER_JUDGE_MODEL` for its model — see
+[`.env.example`](../.env.example)). The gateway never reads them;
+without them judging stays on recorded fixtures. Never commit real
+values.
 
 ## Decision-model catalog (Iter 15)
 
 Which model judges is config, not tribal knowledge. A judges file
 (`catalog-process --judges <file>`) lists one entry per backend —
-`recorded`, `baseten`, `modal` — with the judge model, base URL, the
-*names* of the secret variables, the expected prompt version, and
-the optional known per-call cost; plus a policy section
+`recorded`, `baseten`, `modal`, `openrouter` — with the judge model,
+base URL, the *names* of the secret variables, the expected prompt
+version, and the optional known per-call cost; plus a policy section
 (`sample_rate`, `only_models`/`only_providers` scope, `max_calls`,
 `max_spend_usd`). Recording paths resolve from the working
 directory. Selection rules:
