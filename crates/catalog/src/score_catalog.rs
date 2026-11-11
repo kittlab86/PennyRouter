@@ -124,9 +124,12 @@ impl ScorerCatalog {
     fn from_str(raw: &str) -> Result<Self, Error> {
         let doc: Value = serde_json::from_str(raw)
             .map_err(|e| Error::InvalidFixture(format!("scorers file is not valid JSON: {e}")))?;
-        let list = doc.get("scorers").and_then(Value::as_array).ok_or_else(|| {
-            Error::InvalidFixture("scorers file needs a \"scorers\" array".to_string())
-        })?;
+        let list = doc
+            .get("scorers")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                Error::InvalidFixture("scorers file needs a \"scorers\" array".to_string())
+            })?;
         if list.is_empty() {
             return Err(Error::InvalidFixture(
                 "scorers file needs at least one scorer".to_string(),

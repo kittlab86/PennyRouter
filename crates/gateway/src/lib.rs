@@ -958,9 +958,7 @@ async fn ui_page(State(state): State<AppState>) -> Response {
                 {
                     let page = &mut models_panel;
                     for (model_id, coding, entries) in &summary.models {
-                        let coding = coding
-                            .map(|n| format!(" · coding {n}"))
-                            .unwrap_or_default();
+                        let coding = coding.map(|n| format!(" · coding {n}")).unwrap_or_default();
                         page.push_str(&format!("<h3>{}{}</h3>", esc(model_id), coding));
                         page.push_str(
                             "<table><tr><th>provider</th><th>tag</th>\

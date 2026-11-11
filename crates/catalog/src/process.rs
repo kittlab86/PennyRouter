@@ -99,7 +99,9 @@ fn run_offline_scoring(
         }
         let payload: Value = serde_json::from_str(&ep.payload)?;
         let out = scorer.score(&ep.model_id, &ep.provider_name, &payload)?;
-        let Some(tier) = out.quality_tier else { continue };
+        let Some(tier) = out.quality_tier else {
+            continue;
+        };
         catalog.update_endpoint_score(
             ep.id,
             &EndpointScore {
@@ -337,7 +339,10 @@ mod tests {
             Some(71)
         );
         assert_eq!(
-            extract_aa_index(&payload(json!({"intelligence_index": 0})), "intelligence_index"),
+            extract_aa_index(
+                &payload(json!({"intelligence_index": 0})),
+                "intelligence_index"
+            ),
             Some(0)
         );
         assert_eq!(
@@ -364,10 +369,7 @@ mod tests {
             extract_aa_index(&json!({"benchmarks": {}}), "coding_index"),
             None
         );
-        assert_eq!(
-            extract_aa_index(&payload(json!({})), "coding_index"),
-            None
-        );
+        assert_eq!(extract_aa_index(&payload(json!({})), "coding_index"), None);
         // Null, non-numeric, out of range.
         assert_eq!(
             extract_aa_index(&payload(json!({"coding_index": null})), "coding_index"),

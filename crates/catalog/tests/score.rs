@@ -3,7 +3,7 @@
 mod common;
 
 use common::{fixtures_dir, synced_db};
-use pennyrouter_catalog::{run_scoring, run_processing, Catalog, NullScorer, RecordedScorer};
+use pennyrouter_catalog::{run_processing, run_scoring, Catalog, NullScorer, RecordedScorer};
 use std::fs;
 
 const STAMP: &str = "2026-02-03T04:05:06Z";

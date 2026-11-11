@@ -3,7 +3,7 @@
 
 use axum::{body::Bytes, http::StatusCode, routing::post, Router};
 use pennyrouter_catalog::{
-    publish_ranking, rank_catalog, Assist, Catalog, EndpointIndex, EndpointScore, EndpointRow,
+    publish_ranking, rank_catalog, Assist, Catalog, EndpointIndex, EndpointRow, EndpointScore,
     ModelRow, Promos, Trends,
 };
 use std::{

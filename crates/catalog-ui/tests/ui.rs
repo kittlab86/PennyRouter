@@ -5,7 +5,7 @@
 //! content per route with it set.
 
 use pennyrouter_catalog::{
-    publish, publish_ranking, Catalog, ClassRanking, EndpointIndex, EndpointScore, EndpointRow,
+    publish, publish_ranking, Catalog, ClassRanking, EndpointIndex, EndpointRow, EndpointScore,
     ModelRow, RankEntry, RankingDocument,
 };
 use std::collections::BTreeMap;

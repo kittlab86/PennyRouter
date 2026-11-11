@@ -11,9 +11,9 @@ mod common;
 
 use common::{fixtures_dir, synced_db};
 use pennyrouter_catalog::{
-    build_score, plan_live_calls, run_scoring, run_scoring_selected, run_processing,
-    select_endpoints, spend_line, BasetenScorer, Catalog, EndpointRow, Scorer, ScorerCatalog,
-    ScorerPolicy, ModalScorer, OpenRouterScorer, PROMPT_VERSION,
+    build_score, plan_live_calls, run_processing, run_scoring, run_scoring_selected,
+    select_endpoints, spend_line, BasetenScorer, Catalog, EndpointRow, ModalScorer,
+    OpenRouterScorer, Scorer, ScorerCatalog, ScorerPolicy, PROMPT_VERSION,
 };
 use serde_json::{json, Value};
 use std::io::{Read, Write};

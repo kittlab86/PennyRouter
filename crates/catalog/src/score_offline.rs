@@ -125,7 +125,9 @@ mod tests {
         let high = scorer.score("m/high", "p", &json!({})).unwrap();
         assert_eq!(high.quality_tier.as_deref(), Some("high"));
         assert_eq!(high.quality_score, Some(0.71));
-        let low = scorer.score("m/low", "other", &json!({"tag": "t"})).unwrap();
+        let low = scorer
+            .score("m/low", "other", &json!({"tag": "t"}))
+            .unwrap();
         assert_eq!(low.quality_tier.as_deref(), Some("low"));
         assert_eq!(low.quality_score, Some(0.05));
     }

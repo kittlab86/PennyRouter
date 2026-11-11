@@ -4,8 +4,8 @@ mod common;
 
 use common::{fixtures_dir, synced_db};
 use pennyrouter_catalog::{
-    load_ranking_doc, publish_ranking, rank_catalog, run_scoring, run_processing, verify_ranking,
-    Assist, Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelRow, Promos, RecordedScorer,
+    load_ranking_doc, publish_ranking, rank_catalog, run_processing, run_scoring, verify_ranking,
+    Assist, Catalog, EndpointIndex, EndpointRow, EndpointScore, ModelRow, Promos, RecordedScorer,
     Trends,
 };
 

@@ -222,8 +222,9 @@ impl Catalog {
         // ones already in place.
         for (old, new) in ENDPOINT_RENAMED_COLUMNS {
             if self.has_column("endpoints", old)? && !self.has_column("endpoints", new)? {
-                self.conn
-                    .execute_batch(&format!("ALTER TABLE endpoints RENAME COLUMN {old} TO {new}"))?;
+                self.conn.execute_batch(&format!(
+                    "ALTER TABLE endpoints RENAME COLUMN {old} TO {new}"
+                ))?;
             }
         }
         for (name, ty) in ENDPOINT_INDEXED_COLUMNS {
@@ -384,11 +385,7 @@ impl Catalog {
 
     /// Fill the score columns of one endpoint, leaving the payload
     /// and the deterministic indexed columns alone.
-    pub fn update_endpoint_score(
-        &self,
-        id: i64,
-        score: &EndpointScore,
-    ) -> Result<(), Error> {
+    pub fn update_endpoint_score(&self, id: i64, score: &EndpointScore) -> Result<(), Error> {
         self.conn.execute(
             "UPDATE endpoints SET quality_tier = ?1, quality_score = ?2,
              scored_at = ?3, score_model = ?4, score_prompt = ?5 WHERE id = ?6",

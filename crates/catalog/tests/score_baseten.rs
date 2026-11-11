@@ -5,7 +5,7 @@
 mod common;
 
 use common::{fixtures_dir, synced_db};
-use pennyrouter_catalog::{run_scoring, BasetenScorer, Scorer, RecordedScorer};
+use pennyrouter_catalog::{run_scoring, BasetenScorer, RecordedScorer, Scorer};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpListener;

@@ -4,7 +4,7 @@
 //! from `OPENROUTER_SCORE_MODEL` (fail-closed, nothing pinned) and
 //! the key is the shared `RANKINGS_API_KEY`.
 
-use pennyrouter_catalog::{Scorer, OpenRouterScorer};
+use pennyrouter_catalog::{OpenRouterScorer, Scorer};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpListener;

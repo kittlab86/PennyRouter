@@ -12,9 +12,9 @@
 //! would invalidate its manifest hash.
 
 use pennyrouter_catalog::{
-    build_score, now_rfc3339, plan_live_calls, run_scoring, run_scoring_selected, run_processing,
-    select_endpoints, spend_line, BasetenScorer, Catalog, ScorerCatalog, ScorerEntry, ModalScorer,
-    OpenRouterScorer, RecordedScorer,
+    build_score, now_rfc3339, plan_live_calls, run_processing, run_scoring, run_scoring_selected,
+    select_endpoints, spend_line, BasetenScorer, Catalog, ModalScorer, OpenRouterScorer,
+    RecordedScorer, ScorerCatalog, ScorerEntry,
 };
 use std::fs;
 use std::path::PathBuf;

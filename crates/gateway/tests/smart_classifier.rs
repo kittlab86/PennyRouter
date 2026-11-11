@@ -13,7 +13,7 @@ use axum::{
     routing::post,
     Router,
 };
-use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelRow};
+use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointRow, EndpointScore, ModelRow};
 use pennyrouter_gateway::{ClassifierConfig, Metrics};
 use std::{
     collections::HashMap,

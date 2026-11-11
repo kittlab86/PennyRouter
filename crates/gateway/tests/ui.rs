@@ -6,7 +6,7 @@
 //! the fallback proxy like any unknown path.
 
 use pennyrouter_catalog::{
-    Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelIndex, ModelRow,
+    Catalog, EndpointIndex, EndpointRow, EndpointScore, ModelIndex, ModelRow,
 };
 use std::{
     net::SocketAddr,

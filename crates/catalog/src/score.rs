@@ -30,12 +30,7 @@ pub struct ScorerIdentity {
 /// Scorer hook: signals for one endpoint, given its identity and raw
 /// payload. Implementations must be deterministic for the same input.
 pub trait Scorer {
-    fn score(
-        &self,
-        model_id: &str,
-        provider_name: &str,
-        payload: &Value,
-    ) -> Result<Score, Error>;
+    fn score(&self, model_id: &str, provider_name: &str, payload: &Value) -> Result<Score, Error>;
 
     /// Who to blame in the audit trail. The default (`unknown`) keeps
     /// third-party impls compiling; every in-tree scorer overrides it.
@@ -98,12 +93,9 @@ impl RecordedScorer {
     fn from_str(raw: &str) -> Result<Self, Error> {
         let doc: Value = serde_json::from_str(raw)
             .map_err(|e| Error::InvalidFixture(format!("scores file is not valid JSON: {e}")))?;
-        let list = doc
-            .get("scores")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                Error::InvalidFixture("scores file needs a \"scores\" array".to_string())
-            })?;
+        let list = doc.get("scores").and_then(Value::as_array).ok_or_else(|| {
+            Error::InvalidFixture("scores file needs a \"scores\" array".to_string())
+        })?;
         let mut by_endpoint: HashMap<(String, String), Vec<Record>> = HashMap::new();
         for (i, item) in list.iter().enumerate() {
             let at = |what: &str| format!("scores[{i}]: {what}");
@@ -187,12 +179,7 @@ impl Scorer for RecordedScorer {
         }
     }
 
-    fn score(
-        &self,
-        model_id: &str,
-        provider_name: &str,
-        payload: &Value,
-    ) -> Result<Score, Error> {
+    fn score(&self, model_id: &str, provider_name: &str, payload: &Value) -> Result<Score, Error> {
         let mut out = Score {
             quality_tier: None,
             quality_score: None,

@@ -6,6 +6,11 @@
 
 mod artifact;
 mod fetch;
+mod popular;
+mod price;
+mod process;
+mod rank;
+mod schema;
 mod score;
 mod score_baseten;
 mod score_catalog;
@@ -13,29 +18,11 @@ mod score_modal;
 mod score_offline;
 mod score_openai;
 mod score_openrouter;
-mod popular;
-mod price;
-mod process;
-mod rank;
-mod schema;
 mod store;
 mod sync;
 
 pub use artifact::{now_rfc3339, publish, sha256_hex, verify, Manifest};
 pub use fetch::{fetch_openrouter, fetch_openrouter_extra, Fetched};
-pub use score::{
-    endpoint_tag, run_scoring, run_scoring_selected, Scorer, ScorerIdentity, ScorerSummary, NullScorer,
-    RecordedScorer,
-};
-pub use score_baseten::BasetenScorer;
-pub use score_catalog::{
-    build_score, plan_live_calls, select_endpoints, spend_line, ScorerCatalog, ScorerEntry,
-    ScorerPlan, ScorerPolicy, KNOWN_BACKENDS,
-};
-pub use score_modal::ModalScorer;
-pub use score_offline::{OfflineScorer, RULESET_VERSION};
-pub use score_openai::PROMPT_VERSION;
-pub use score_openrouter::OpenRouterScorer;
 pub use popular::{
     aggregate_apps, aggregate_models, fetch_popularity, read_popularity, store_popularity,
     Popularity, POPULAR_APPS_TOP_N, POPULAR_MODELS_TOP_N, RANKINGS_WINDOW_DAYS,
@@ -50,8 +37,21 @@ pub use rank::{
     Signals, TrendStats, Trends,
 };
 pub use schema::{SCHEMA_VERSION, V1_DDL};
+pub use score::{
+    endpoint_tag, run_scoring, run_scoring_selected, NullScorer, RecordedScorer, Scorer,
+    ScorerIdentity, ScorerSummary,
+};
+pub use score_baseten::BasetenScorer;
+pub use score_catalog::{
+    build_score, plan_live_calls, select_endpoints, spend_line, ScorerCatalog, ScorerEntry,
+    ScorerPlan, ScorerPolicy, KNOWN_BACKENDS,
+};
+pub use score_modal::ModalScorer;
+pub use score_offline::{OfflineScorer, RULESET_VERSION};
+pub use score_openai::PROMPT_VERSION;
+pub use score_openrouter::OpenRouterScorer;
 pub use store::{
-    Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelIndex, ModelPayload, ModelRow,
+    Catalog, EndpointIndex, EndpointRow, EndpointScore, ModelIndex, ModelPayload, ModelRow,
 };
 pub use sync::{load_endpoints_dir, run_fixture_sync, Summary};
 

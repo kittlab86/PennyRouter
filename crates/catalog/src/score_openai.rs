@@ -37,7 +37,9 @@ pub fn score_from_reply(source: &str, reply: &Value) -> Result<Score, Error> {
     let content = reply
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::Scorer(format!("{source} reply has no choices[0].message.content")))?;
+        .ok_or_else(|| {
+            Error::Scorer(format!("{source} reply has no choices[0].message.content"))
+        })?;
     parse_score(source, content)
 }
 

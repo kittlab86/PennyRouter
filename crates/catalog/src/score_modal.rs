@@ -6,7 +6,7 @@
 //! pair travels only in headers and is never logged (no `Debug` impl on
 //! purpose).
 
-use crate::score::{Scorer, Score};
+use crate::score::{Score, Scorer};
 use crate::score_openai::{chat_body, score_from_reply};
 use crate::Error;
 use serde_json::Value;
@@ -53,12 +53,7 @@ impl ModalScorer {
         )
     }
 
-    fn chat(
-        &self,
-        model_id: &str,
-        provider_name: &str,
-        payload: &Value,
-    ) -> Result<Score, Error> {
+    fn chat(&self, model_id: &str, provider_name: &str, payload: &Value) -> Result<Score, Error> {
         let body = chat_body(&self.model, model_id, provider_name, payload);
         let url = format!("{}/chat/completions", self.base_url);
         let reply: Value = self
@@ -82,12 +77,7 @@ impl Scorer for ModalScorer {
         }
     }
 
-    fn score(
-        &self,
-        model_id: &str,
-        provider_name: &str,
-        payload: &Value,
-    ) -> Result<Score, Error> {
+    fn score(&self, model_id: &str, provider_name: &str, payload: &Value) -> Result<Score, Error> {
         self.chat(model_id, provider_name, payload)
     }
 }

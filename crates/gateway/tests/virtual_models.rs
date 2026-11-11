@@ -6,7 +6,7 @@
 //! away from recently rate-limited providers.
 
 use axum::{body::Bytes, http::StatusCode, routing::post, Router};
-use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointScore, EndpointRow, ModelRow};
+use pennyrouter_catalog::{Catalog, EndpointIndex, EndpointRow, EndpointScore, ModelRow};
 use std::{
     collections::HashMap,
     net::SocketAddr,

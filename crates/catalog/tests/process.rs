@@ -582,8 +582,7 @@ fn offline_scoring_never_overwrites_existing_tiers() {
             model_id: "m/coder".to_string(),
             name: "Coder".to_string(),
             source: "openrouter".to_string(),
-            payload: r#"{"benchmarks":{"artificial_analysis":{"coding_index":90}}}"#
-                .to_string(),
+            payload: r#"{"benchmarks":{"artificial_analysis":{"coding_index":90}}}"#.to_string(),
             fetched_at: "t".to_string(),
         })
         .unwrap();
@@ -637,7 +636,10 @@ fn offline_scoring_never_overwrites_existing_tiers() {
     assert_eq!(summary.scored, 1);
 
     let eps = catalog.endpoints_for("m/coder").unwrap();
-    let online = eps.iter().find(|ep| ep.provider_name == "p-online").unwrap();
+    let online = eps
+        .iter()
+        .find(|ep| ep.provider_name == "p-online")
+        .unwrap();
     assert_eq!(online.quality_tier.as_deref(), Some("low"));
     assert_eq!(online.quality_score, Some(0.2));
     assert_eq!(online.scored_at.as_deref(), Some("t0"));
@@ -732,10 +734,16 @@ fn migration_v6_to_v7_renames_scoring_columns() {
         .collect::<Result<_, _>>()
         .unwrap();
     for old in ["judged_at", "judge_model", "judge_prompt"] {
-        assert!(!cols.contains(&old.to_string()), "legacy column survived: {old}");
+        assert!(
+            !cols.contains(&old.to_string()),
+            "legacy column survived: {old}"
+        );
     }
     for new in ["scored_at", "score_model", "score_prompt"] {
-        assert!(cols.contains(&new.to_string()), "renamed column missing: {new}");
+        assert!(
+            cols.contains(&new.to_string()),
+            "renamed column missing: {new}"
+        );
     }
 
     // Legacy meta dropped, version bumped.
