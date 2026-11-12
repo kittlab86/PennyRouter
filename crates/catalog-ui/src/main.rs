@@ -59,13 +59,42 @@ fn fmt_price(value: f64) -> String {
 fn shell(title: &str, nav: &str, body: String) -> String {
     format!(
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
         <title>{title} — PennyRouter catalog</title>\
-        <style>body{{font-family:system-ui,sans-serif;margin:2em;max-width:72em}}\
-        table{{border-collapse:collapse;margin:1em 0}}\
-        th,td{{border:1px solid #999;padding:.3em .6em;text-align:left;font-size:.9em}}\
-        th{{background:#eee}}pre{{background:#f4f4f4;padding:1em;overflow:auto}}\
-        nav a{{margin-right:1em}}</style></head><body>\
-        <h1>PennyRouter catalog</h1><nav>{nav}</nav>{body}</body></html>",
+        <style>:root{{color-scheme:dark;--bg:#0d0f1e;--panel:#151a33;--panel-2:#1c2342;\
+        --ink:#e9ecff;--muted:#a3acc9;--line:#2c3560;--cyan:#00e5ff;--magenta:#ff2e88;\
+        --yellow:#ffd23f;--green:#39ff6a}}\
+        *{{box-sizing:border-box;border-radius:0!important}}\
+        body{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\
+        background:var(--bg);color:var(--ink);margin:0;padding:0 1.5em 3em;line-height:1.55}}\
+        body::after{{content:\"\";position:fixed;inset:0;z-index:9999;pointer-events:none;\
+        background:repeating-linear-gradient(0deg,rgba(0,0,0,.14) 0 1px,transparent 1px 3px)}}\
+        a{{color:var(--cyan)}}a:hover{{color:var(--yellow)}}\
+        :focus-visible{{outline:2px solid var(--yellow);outline-offset:2px}}\
+        .wrap{{max-width:72em;margin:0 auto}}\
+        header.top{{background:var(--panel);border-bottom:3px solid var(--magenta);\
+        box-shadow:0 3px 0 #000;margin:0 -1.5em 1.5em;padding:1.2em 1.5em}}\
+        h1{{font-size:1.4em;margin:0 0 .6em;letter-spacing:.06em;color:var(--yellow);\
+        text-shadow:3px 3px 0 #000}}h1 span{{color:var(--cyan)}}\
+        h2{{font-size:1.05em;letter-spacing:.08em;color:var(--cyan);text-shadow:2px 2px 0 #000}}\
+        h3{{font-size:.95em;letter-spacing:.06em;color:var(--yellow);text-shadow:2px 2px 0 #000}}\
+        nav{{display:flex;gap:.5em;flex-wrap:wrap}}\
+        nav a{{font-size:.85em;font-weight:700;letter-spacing:.08em;text-transform:uppercase;\
+        text-decoration:none;color:var(--muted);background:var(--bg);border:2px solid var(--line);\
+        box-shadow:3px 3px 0 #000;padding:.5em .9em}}\
+        nav a:hover{{color:var(--ink);border-color:var(--cyan)}}\
+        table{{border-collapse:collapse;margin:1em 0;background:var(--panel);\
+        border:3px solid var(--line);box-shadow:6px 6px 0 #000}}\
+        th,td{{border:1px solid var(--line);padding:.4em .7em;text-align:left;font-size:.9em}}\
+        th{{background:var(--panel-2);color:var(--yellow);letter-spacing:.08em;\
+        border-bottom:3px solid var(--magenta)}}\
+        tbody tr:nth-child(even) td{{background:rgba(255,255,255,.025)}}\
+        pre{{background:#0a0d1c;border:3px solid var(--line);box-shadow:6px 6px 0 #000;\
+        padding:1em;overflow:auto}}p{{color:var(--ink)}}\
+        @media (prefers-reduced-motion:reduce){{body::after{{display:none}}}}\
+        </style></head><body><div class=\"wrap\">\
+        <header class=\"top\"><h1>PennyRouter <span>catalog</span></h1><nav>{nav}</nav></header>\
+        {body}</div></body></html>",
         title = esc(title),
     )
 }

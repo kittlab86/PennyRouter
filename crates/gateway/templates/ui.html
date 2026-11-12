@@ -6,76 +6,113 @@
 <title>PennyRouter gateway · debug UI</title>
 <script>document.documentElement.classList.add('js');</script>
 <style>
+  /* 8-bit arcade theme (shared palette with landing.html): dark CRT,
+     chunky borders, hard pixel shadows, sharp corners. CSS only. */
   :root {
-    --ink: #1f2733;
-    --muted: #5c6675;
-    --line: #e4e8ef;
-    --wash: #f6f8fa;
-    --ok: #177245;
-    --ok-bg: #e5f3eb;
-    --link: #0b5cad;
+    color-scheme: dark;
+    --bg: #0d0f1e;
+    --panel: #151a33;
+    --panel-2: #1c2342;
+    --ink: #e9ecff;
+    --muted: #a3acc9;
+    --line: #2c3560;
+    --link: #00e5ff;
+    --cyan: #00e5ff;
+    --magenta: #ff2e88;
+    --yellow: #ffd23f;
+    --green: #39ff6a;
+    --orange: #ff9f1c;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; border-radius: 0 !important; }
   body {
     margin: 0;
-    background: #fff;
+    background: var(--bg);
     color: var(--ink);
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    line-height: 1.5;
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    line-height: 1.55;
+  }
+  /* CRT scanlines: subtle texture overlay, no pointer interference. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.14) 0 1px, transparent 1px 3px);
   }
   a { color: var(--link); }
-  code, .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.875em;
-  }
-  header.top { background: var(--wash); border-bottom: 1px solid var(--line); }
+  a:hover { color: var(--yellow); }
+  :focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
+  code, .mono { font-family: var(--mono); font-size: 0.875em; }
+  header.top { background: var(--panel); border-bottom: 3px solid var(--magenta); box-shadow: 0 3px 0 #000; }
   .wrap { max-width: 88rem; margin: 0 auto; padding: 0 1.5rem; }
   .brand { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; padding: 1.2rem 0 0.8rem; }
-  .brand h1 { font-size: 1.3rem; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
-  .brand h1 span { color: var(--muted); font-weight: 400; }
-  .brand .spacer { flex: 1; }
-  .brand .home { font-size: 0.9rem; }
-  nav.tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; padding-bottom: 0; }
-  nav.tabs button {
-    appearance: none; border: 0; background: transparent; cursor: pointer;
-    font: inherit; font-size: 0.92rem; color: var(--muted);
-    padding: 0.55rem 0.85rem 0.6rem; border-bottom: 2px solid transparent;
+  .brand h1 {
+    font-size: 1.4rem; margin: 0; font-weight: 700; letter-spacing: 0.06em;
+    color: var(--yellow); text-shadow: 3px 3px 0 #000;
   }
-  nav.tabs button:hover { color: var(--ink); background: #eceff3; }
-  nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 650; border-bottom-color: var(--ink); }
+  .brand h1 span { color: var(--cyan); font-weight: 700; }
+  .brand .spacer { flex: 1; }
+  .brand .home { font-size: 0.9rem; font-weight: 700; letter-spacing: 0.06em; }
+  nav.tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; padding-bottom: 0.8rem; }
+  nav.tabs button {
+    appearance: none; cursor: pointer; font: inherit;
+    font-size: 0.85rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); background: var(--bg);
+    border: 2px solid var(--line); box-shadow: 3px 3px 0 #000;
+    padding: 0.5rem 0.9rem;
+  }
+  nav.tabs button:hover { color: var(--ink); border-color: var(--cyan); }
+  nav.tabs button[aria-selected="true"] {
+    color: #1a1400; background: var(--yellow); border-color: var(--yellow);
+  }
   main .wrap { padding-top: 1.5rem; padding-bottom: 3rem; }
   html.js .tab-panel { display: none; }
   html.js .tab-panel.active { display: block; }
-  .tab-panel h2 { font-size: 1.05rem; margin: 0 0 0.6rem; font-weight: 650; }
-  .tab-panel h3 { font-size: 0.95rem; margin: 1.4rem 0 0.4rem; font-weight: 650; }
-  .tab-panel h4 { font-size: 0.9rem; margin: 1.1rem 0 0.3rem; font-weight: 600; }
+  .tab-panel h2 {
+    font-size: 1.05rem; margin: 0 0 0.6rem; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--cyan); text-shadow: 2px 2px 0 #000;
+  }
+  .tab-panel h3 {
+    font-size: 0.95rem; margin: 1.4rem 0 0.4rem; font-weight: 700; letter-spacing: 0.06em;
+    color: var(--yellow); text-shadow: 2px 2px 0 #000;
+  }
+  .tab-panel h4 { font-size: 0.9rem; margin: 1.1rem 0 0.3rem; font-weight: 700; color: var(--ink); }
   .tab-panel p { max-width: 70rem; }
   .tab-panel ul { padding-left: 1.4rem; }
-  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; margin: 0.6rem 0; }
+  .table-scroll { overflow-x: auto; border: 3px solid var(--line); background: var(--panel); box-shadow: 6px 6px 0 #000; margin: 0.6rem 0; }
   table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.4rem 0.6rem; vertical-align: top; white-space: nowrap; }
   thead th, tbody tr:first-child th {
-    background: var(--wash); color: var(--muted); font-weight: 600; font-size: 0.76rem;
-    border-bottom: 1px solid var(--line);
+    background: var(--panel-2); color: var(--yellow); font-weight: 700; font-size: 0.76rem;
+    letter-spacing: 0.08em; border-bottom: 3px solid var(--magenta);
   }
-  tbody tr + tr td, tbody tr + tr th { border-top: 1px solid var(--line); }
-  .bare-table { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 0.6rem 0; width: fit-content; max-width: 100%; }
+  tbody tr + tr td, tbody tr + tr th { border-top: 2px solid var(--line); }
+  tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.025); }
+  .bare-table { border: 3px solid var(--line); background: var(--panel); box-shadow: 6px 6px 0 #000; overflow: auto; margin: 0.6rem 0; width: fit-content; max-width: 100%; }
   pre {
-    background: var(--wash); border: 1px solid var(--line); border-radius: 10px;
-    padding: 1rem; overflow: auto; font-size: 0.8rem; max-width: 70rem;
+    background: #0a0d1c; border: 3px solid var(--line); box-shadow: 6px 6px 0 #000;
+    padding: 1rem; overflow: auto; font-size: 0.8rem; max-width: 70rem; color: var(--ink);
   }
   input[type="text"], input[type="password"], input:not([type]) {
-    font: inherit; font-size: 0.9rem; padding: 0.35rem 0.5rem;
-    border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink);
+    font: inherit; font-size: 0.9rem; padding: 0.45rem 0.6rem;
+    border: 2px solid var(--cyan); background: #0a0d1c; color: var(--ink);
   }
   button.action {
-    font: inherit; font-size: 0.9rem; cursor: pointer;
-    padding: 0.35rem 0.8rem; border: 1px solid var(--line); border-radius: 6px;
-    background: var(--wash); color: var(--ink);
+    font: inherit; font-size: 0.85rem; font-weight: 700; letter-spacing: 0.06em; cursor: pointer;
+    padding: 0.45rem 0.9rem; border: 2px solid var(--green); box-shadow: 3px 3px 0 #000;
+    background: var(--green); color: #06130a;
   }
-  button.action:hover { background: #eceff3; }
-  label { white-space: nowrap; }
+  button.action:hover { background: var(--yellow); border-color: var(--yellow); }
+  button.action:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
+  label { white-space: nowrap; color: var(--muted); }
   #inspector-hash { color: var(--muted); font-size: 0.85rem; }
+  @media (prefers-reduced-motion: reduce) {
+    body::after { display: none; }
+    button.action:active { transform: none; }
+  }
 </style>
 </head>
 <body>
