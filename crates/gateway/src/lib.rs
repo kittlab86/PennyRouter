@@ -863,9 +863,6 @@ async fn ui_page(State(state): State<AppState>) -> Response {
             .replace('>', "&gt;")
             .replace('"', "&quot;")
     }
-    /// Display unit is $/M tokens (×1e6): fixed 4 decimals down to
-    /// $0.0001/M, then scientific — a tiny nonzero price must never
-    /// print as `0.0000` (looks free).
     /// Class display: unclassified ("unknown") renders as `-`, like missing.
     fn class(value: &Option<String>) -> String {
         match value.as_deref() {
@@ -874,18 +871,12 @@ async fn ui_page(State(state): State<AppState>) -> Response {
         }
     }
 
+    /// Display unit is $/M tokens (×1e6): two decimals by default,
+    /// extra decimals only when needed — shared with catalog-ui.
     fn money(value: Option<f64>) -> String {
         match value {
             None => "-".to_string(),
-            Some(0.0) => "0".to_string(),
-            Some(v) => {
-                let m = v * 1_000_000.0;
-                if m.abs() >= 0.0001 {
-                    format!("{m:.4}")
-                } else {
-                    format!("{m:.2e}")
-                }
-            }
+            Some(v) => pennyrouter_catalog::fmt_price_per_m(v),
         }
     }
     fn text(value: &Option<String>) -> String {

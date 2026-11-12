@@ -75,6 +75,29 @@ pub fn effective_cost(
     Some(total * (1.0 - discount.clamp(0.0, 1.0)))
 }
 
+/// Render a per-token price in $/M tokens (×1e6): two decimals by
+/// default, extra decimals only when needed (up to four), then
+/// scientific — a tiny nonzero price must never print as `0.00`
+/// (looks free). Shared by the gateway /ui and catalog-ui tables.
+pub fn fmt_price_per_m(value: f64) -> String {
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let m = value * 1_000_000.0;
+    if m.abs() < 0.0001 {
+        return format!("{m:.2e}");
+    }
+    let text = format!("{m:.4}");
+    // Trim trailing zeros past the second decimal: "2.5000" ->
+    // "2.50", "0.1250" -> "0.125"; "0.0002" keeps what it needs.
+    let dot = text.find('.').unwrap_or(text.len());
+    let mut end = text.len();
+    while end > dot + 3 && text.as_bytes()[end - 1] == b'0' {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
 /// One time-boxed promo window. `tag` narrows the match to one offering;
 /// omitted it matches every offering of the (model, provider) pair.
 #[derive(Debug, Clone)]
@@ -423,6 +446,20 @@ mod tests {
             flipped.free_until("m", "p", None, "2026-01-15T00:00:00Z"),
             Some("2026-04-01T00:00:00Z".to_string())
         );
+    }
+
+    #[test]
+    fn prices_render_per_million_with_needed_decimals() {
+        assert_eq!(fmt_price_per_m(0.0), "0");
+        assert_eq!(fmt_price_per_m(1e-6), "1.00");
+        assert_eq!(fmt_price_per_m(2.5e-6), "2.50");
+        assert_eq!(fmt_price_per_m(1.0), "1000000.00");
+        // Extra decimals only when needed for low values.
+        assert_eq!(fmt_price_per_m(1.25e-7), "0.125");
+        assert_eq!(fmt_price_per_m(4.4e-8), "0.044");
+        // Floor: fixed down to $0.0001/M, then scientific.
+        assert_eq!(fmt_price_per_m(2e-10), "0.0002");
+        assert_eq!(fmt_price_per_m(1e-11), "1.00e-5");
     }
 
     #[test]

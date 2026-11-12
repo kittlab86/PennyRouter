@@ -352,7 +352,7 @@ fn model_link_round_trips_special_chars_and_prices_render() {
         "no per-token prices shown, got: {filtered}"
     );
     assert!(
-        filtered.contains("0.0440"),
+        filtered.contains("0.044"),
         "tiny price renders non-zero $/M, got: {filtered}"
     );
     assert!(
@@ -360,8 +360,16 @@ fn model_link_round_trips_special_chars_and_prices_render() {
         "tiny price never looks free, got: {filtered}"
     );
     assert!(
-        filtered.contains("0.1250"),
-        "normal prices keep fixed precision, got: {filtered}"
+        !filtered.contains("0.0440"),
+        "no trailing zero decimals, got: {filtered}"
+    );
+    assert!(
+        filtered.contains("0.125"),
+        "normal prices keep needed precision, got: {filtered}"
+    );
+    assert!(
+        !filtered.contains("0.1250"),
+        "no trailing zero decimals, got: {filtered}"
     );
     assert!(
         !filtered.contains(">unknown<"),

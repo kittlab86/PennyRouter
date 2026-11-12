@@ -629,13 +629,18 @@ async fn ui_prices_render_per_million_tokens() {
         .await
         .unwrap();
     for (raw, shown) in [
-        ("1.0", "1000000.0000"),
-        ("2.0", "2000000.0000"),
-        ("3.0", "3000000.0000"),
+        ("1.0", "1000000.00"),
+        ("2.0", "2000000.00"),
+        ("3.0", "3000000.00"),
     ] {
         assert!(
             body.contains(shown),
             "fixture {raw} $/tok renders as {shown} $/M"
+        );
+        let padded = format!("{shown}00");
+        assert!(
+            !body.contains(padded.as_str()),
+            "fixture {raw} $/tok has no trailing zero decimals"
         );
     }
     assert!(body.contains("Cheap"), "unknown-class row still listed");

@@ -28,7 +28,8 @@ pub use popular::{
     Popularity, POPULAR_APPS_TOP_N, POPULAR_MODELS_TOP_N, RANKINGS_WINDOW_DAYS,
 };
 pub use price::{
-    balanced_profile, builtin_profiles, effective_cost, resolve_discount, Promos, WorkloadProfile,
+    balanced_profile, builtin_profiles, effective_cost, fmt_price_per_m, resolve_discount, Promos,
+    WorkloadProfile,
 };
 pub use process::{run_processing, ProcessSummary};
 pub use rank::{

@@ -50,20 +50,10 @@ fn url_encode(text: &str) -> String {
     out
 }
 
-/// Price rendering in $/M tokens (×1e6): fixed 4 decimals down to
-/// $0.0001/M, then scientific — a tiny nonzero price must never
-/// print as `0.0000` (looks free).
+/// Price rendering in $/M tokens (×1e6): two decimals by default,
+/// extra decimals only when needed — shared with the gateway /ui.
 fn fmt_price(value: f64) -> String {
-    if value == 0.0 {
-        "0".to_string()
-    } else {
-        let m = value * 1_000_000.0;
-        if m.abs() >= 0.0001 {
-            format!("{m:.4}")
-        } else {
-            format!("{m:.2e}")
-        }
-    }
+    pennyrouter_catalog::fmt_price_per_m(value)
 }
 
 fn shell(title: &str, nav: &str, body: String) -> String {
@@ -483,9 +473,12 @@ mod tests {
     #[test]
     fn prices_render_per_million_tokens() {
         assert_eq!(fmt_price(0.0), "0");
-        assert_eq!(fmt_price(1e-6), "1.0000");
-        assert_eq!(fmt_price(2.5e-6), "2.5000");
-        assert_eq!(fmt_price(1.0), "1000000.0000");
+        assert_eq!(fmt_price(1e-6), "1.00");
+        assert_eq!(fmt_price(2.5e-6), "2.50");
+        assert_eq!(fmt_price(1.0), "1000000.00");
+        // Extra decimals only when needed for low values.
+        assert_eq!(fmt_price(1.25e-7), "0.125");
+        assert_eq!(fmt_price(4.4e-8), "0.044");
         // Floor: fixed down to $0.0001/M, then scientific.
         assert_eq!(fmt_price(2e-10), "0.0002");
         assert_eq!(fmt_price(1e-11), "1.00e-5");
