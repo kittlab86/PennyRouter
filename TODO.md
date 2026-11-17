@@ -80,6 +80,12 @@ cheap judge model, classifier-based routing.
 
 ## Next (planned — detail in [docs/roadmap.md](docs/roadmap.md))
 
+- [ ] **Iter 19 — OpenRouter Batch API support.** Custom handlers for
+  `POST /api/v1/batches` (submit async batch, returns 202) and
+  `GET /api/v1/batches/{id}` (poll status). Concurrency limits and body
+  cap apply; metrics tracked under `batch_submit` / `batch_status` routes.
+  Test: submit + poll against mock backend; metrics labels appear.
+
 - [x] **Iter 9 — Resilience bounds.** Bounded upstream concurrency +
       queue depth with explicit 503 shedding + graceful shutdown.
       Test: soak sheds cleanly (`tests/resilience.rs`); SIGTERM drains.

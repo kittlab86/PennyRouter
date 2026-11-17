@@ -39,8 +39,10 @@ path lives only in logs).
 | `GET /` | Landing page: binary version + build hash, config status, links; always served locally (never proxied) |
 | `GET /ui` | Debug UI (Iter 17): read-only snapshot, ranking, metrics page; registered only with `GATEWAY_UI=1`, otherwise falls through to fallback |
 | `GET /v1/models` | Curated menu (Iter 13): exactly the six virtual ids, served locally |
-| `POST /v1/embeddings`, `POST /v1/completions`, `/v1/audio/*`, `/v1/images/*`, `/v1/moderations`, `/v1/files`, `/v1/batches`, `/v1/fine_tuning/*`, `/v1/vector_stores` | Proxied + logged |
-| OpenRouter extras `/api/v1/auth/key`, `/api/v1/credits`, `/api/v1/generation` | No `/v1` alias exists, so these don't compose through the gateway (`{base}{path}` would double `/api`); call OpenRouter directly (verified live: 200). A gateway call is still logged, then answers upstream 404. |
+|| `POST /v1/embeddings`, `POST /v1/completions`, `/v1/audio/*`, `/v1/images/*`, `/v1/moderations`, `/v1/files`, `/v1/fine_tuning/*`, `/v1/vector_stores` | Proxied + logged |
+|| OpenRouter Batch API (Iter 19): `POST /api/v1/batches` | Custom handler: submit async batch, returns 202 with batch object; concurrency limits + body cap apply |
+|| OpenRouter Batch API (Iter 19): `GET /api/v1/batches/{id}` | Custom handler: poll batch status; concurrency limits apply |
+|| OpenRouter extras `/api/v1/auth/key`, `/api/v1/credits`, `/api/v1/generation` | No `/v1` alias exists, so these don't compose through the gateway (`{base}{path}` would double `/api`); call OpenRouter directly (verified live: 200). A gateway call is still logged, then answers upstream 404. |
 | Ollama-native `/api/chat`, `/api/generate`, `/api/tags`, `/api/show`, `/api/embed`, `/api/ps`, `/api/version` | Proxied as-is to the configured upstream + logged. OpenRouter hosts no such paths (upstream 404, still logged); with an Ollama upstream they pass straight through. No Ollama↔OpenAI translation yet. |
 | Anything else | Proxied as-is + logged |
 

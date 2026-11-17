@@ -25,6 +25,8 @@ pub enum Route {
     Responses,
     Ui,
     Metrics,
+    BatchSubmit,
+    BatchStatus,
     Other,
 }
 
@@ -37,6 +39,8 @@ impl Route {
             "/v1/responses" => Self::Responses,
             "/ui" => Self::Ui,
             "/metrics" => Self::Metrics,
+            "/api/v1/batches" => Self::BatchSubmit,
+            _ if path.starts_with("/api/v1/batches/") => Self::BatchStatus,
             _ => Self::Other,
         }
     }
@@ -48,6 +52,8 @@ impl Route {
             Self::Responses => "responses",
             Self::Ui => "ui",
             Self::Metrics => "metrics",
+            Self::BatchSubmit => "batch_submit",
+            Self::BatchStatus => "batch_status",
             Self::Other => "other",
         }
     }
@@ -59,7 +65,9 @@ impl Route {
             Self::Responses => 2,
             Self::Ui => 3,
             Self::Metrics => 4,
-            Self::Other => 5,
+            Self::BatchSubmit => 5,
+            Self::BatchStatus => 6,
+            Self::Other => 7,
         }
     }
 }

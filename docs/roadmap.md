@@ -423,6 +423,12 @@ Development delivers Docker images, platform delivers deployments.
 
 ## After Iter 18
 
+- [ ] **Iter 19 — OpenRouter Batch API support.** Custom handlers for
+  `POST /api/v1/batches` (submit async batch, returns 202) and
+  `GET /api/v1/batches/{id}` (poll status). Concurrency limits and body
+  cap apply; metrics tracked under `batch_submit` / `batch_status` routes.
+  Test: submit + poll against mock backend; metrics labels appear.
+
 Deferred ideas in [future.md](future.md): classifier routing,
 parallel fan-out, more judge models. Each becomes roadmap items only
 when pulled forward deliberately.
